@@ -2,7 +2,7 @@ import requests as rs
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from tools.scraping import *
+from wsba_hockey.tools.scraping import *
 
 ### WSBA HOCKEY ###
 ## Provided below are all integral functions in the WSBA Hockey Python package. ##
