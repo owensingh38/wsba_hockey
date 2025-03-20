@@ -1,0 +1,9 @@
+LICENSE
+README.md
+pyproject.toml
+src/wsba_hockey/wsba_main.py
+src/wsba_hockey.egg-info/PKG-INFO
+src/wsba_hockey.egg-info/SOURCES.txt
+src/wsba_hockey.egg-info/dependency_links.txt
+src/wsba_hockey.egg-info/top_level.txt
+src/wsba_hockey/tools/scraping.py
