@@ -12,3 +12,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+keywords = ["wsba","hockey","scraping","NHL","analytics"]
+
+[project.urls]
+Homepage = "https://github.com/owensingh38/wsba_hockey/"
