@@ -29,7 +29,7 @@ from tools.scraping import *
 
 ### ACKNOWLEDGEMENTS AND CREDITS ###
 ## Huge thanks to the following: ##
-# Harry Shomer - Creator of the hockey_scraper package, which contains select utils functions utilized in this package and serves as a massive inspiration for this package. #
+# Harry Shomer - Creator of the hockey_scraper package, which contains select utils functions utilized in this package and otherwise inspires the creation of this package. #
 # Dan Morse - Creator of the hockeyR package; another important inspiration and model for developing an NHL scraper. #
 
 ## SCRAPE FUNCTIONS ##
