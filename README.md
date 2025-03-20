@@ -3,9 +3,13 @@
 
 ### A Python package for scraping and analyzing hockey data under the motto: ***Evaluating, analyzing, and understanding the game of hockey through the lens of different analytical methods, including incorporation of analytics.***
 
-## INSTALLATION
-```python
+## INSTALLATION AND USAGE
+```bash
 pip install wsba_hockey
+```
+
+```python
+import wsba_hockey as wsba
 ```
 
 ## ALL FEATURES
