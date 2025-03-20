@@ -1,0 +1,14 @@
+[project]
+name = "wsba_hockey"
+version = "0.1.0"
+authors = [
+  { name="Owen Singh", email="owenbksingh@gmail.com" },
+]
+description = "WeakSide Breakout's complete Python package of access to hockey data, primairly including the scraping of National Hockey League schedule, play-by-play, and shifts information."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
