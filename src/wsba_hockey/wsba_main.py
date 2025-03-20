@@ -7,31 +7,6 @@ from tools.scraping import *
 ### WSBA HOCKEY ###
 ## Provided below are all integral functions in the WSBA Hockey Python package. ##
 
-
-### ALL FEATURES ###
-# Note: Features yet included are marked with *
-
-## SCRAPING ##
-# NHL Play-by-Play (Of any game frame up to a full season) #
-# NHL Season Information #
-# NHL Rosters and Player Information #
-
-## DATA ANALYTICS ##
-# Expected Goals (WeakSide Breakout and MoneyPuck models)* #
-# Goal Impacts and Shot Analysis* #
-# Stat Aggregation* #
-# Shot Plotting (Plots, Heatmaps, etc.)* #
-
-## REPOSITORY ##
-# Past Season Play-by-Play* #
-# Team Information #
-# Schedule #
-
-### ACKNOWLEDGEMENTS AND CREDITS ###
-## Huge thanks to the following: ##
-# Harry Shomer - Creator of the hockey_scraper package, which contains select utils functions utilized in this package and otherwise inspires the creation of this package. #
-# Dan Morse - Creator of the hockeyR package; another important inspiration and model for developing an NHL scraper. #
-
 ## SCRAPE FUNCTIONS ##
 def nhl_scrape_game(game_ids,split_shifts = False,remove = ['period-start','period-end','challenge','stoppage']):
     #Given a set of game_ids (NHL API), return complete play-by-play information as requested
