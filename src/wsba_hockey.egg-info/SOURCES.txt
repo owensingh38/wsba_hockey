@@ -8,3 +8,4 @@ src/wsba_hockey.egg-info/SOURCES.txt
 src/wsba_hockey.egg-info/dependency_links.txt
 src/wsba_hockey.egg-info/top_level.txt
 src/wsba_hockey/tools/scraping.py
+src/wsba_hockey/tools/xg_model.py
