@@ -47,8 +47,15 @@ wsba.nhl_scrape_player_info(wsba.nhl_scrape_roster('20242025'))
 
 ## REPOSITORY 
 ### Past Season Play-by-Play*
-### Team Information*
-### Schedule*
+### Team Information
+```python
+wsba.repo_load_teaminfo()
+wsba.repo_load_rosters(seasons=['20212022','20222023','20232024','20242025])
+```
+### Schedule
+```python
+wsba.repo_load_schedule(seasons=['20212022','20222023','20232024','20242025])
+```
 
 ## ACKNOWLEDGEMENTS AND CREDITS 
 ### Huge thanks to the following:

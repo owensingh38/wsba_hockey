@@ -1,13 +1,9 @@
 import re
-from bs4 import BeautifulSoup, SoupStrainer
+from bs4 import BeautifulSoup
 import hockey_scraper.utils.shared as shared
-import hockey_scraper.nhl.pbp.html_pbp as html
-import hockey_scraper.nhl.game_scraper as gs
 import numpy as np
 import pandas as pd
 import warnings
-import requests as rs
-from zipfile import ZipFile
 warnings.filterwarnings('ignore')
 
 ### SCRAPING FUNCTIONS ###
@@ -68,6 +64,10 @@ def parse_json(json):
     info = pd.json_normalize(json)
     roster = pd.json_normalize(json['rosterSpots'])
 
+    #Return error if game is set in the future
+    if info['gameState'][0] == 'FUT':
+        raise ValueError(f"Game {info['id'][0]} has not occured yet.")
+
     #Game information
     events['game_id'] = info['id'][0]
     events['season'] = info['season'][0]
@@ -127,12 +127,25 @@ def parse_json(json):
     # x, y - Raw coordinates from JSON pbpp
     # x_fixed, y_fixed - Coordinates fixed to the right side of the ice (x is always greater than 0)
     # x_adj, y_adj - Adjusted coordinates configuring away events with negative x vlaues while home events are always positive
-    events['x_fixed'] = abs(events['details.xCoord'])
-    events['y_fixed'] = np.where(events['details.xCoord']<0,-events['details.yCoord'],events['details.yCoord'])
-    events['x_adj'] = np.where(events['event_team_status']=="home",events['x_fixed'],-events['x_fixed'])
-    events['y_adj'] = np.where(events['event_team_status']=="home",events['y_fixed'],-events['y_fixed'])
-    events['event_distance'] = np.sqrt(((89 - events['x_fixed'])**2) + (events['y_fixed']**2))
-    events['event_angle'] = np.degrees(np.arctan2(abs(events['y_fixed']), abs(89 - events['x_fixed'])))
+    
+    #Some games (mostly preseason and all star games) do not include coordinates.  
+    try:
+        events['x_fixed'] = abs(events['details.xCoord'])
+        events['y_fixed'] = np.where(events['details.xCoord']<0,-events['details.yCoord'],events['details.yCoord'])
+        events['x_adj'] = np.where(events['event_team_status']=="home",events['x_fixed'],-events['x_fixed'])
+        events['y_adj'] = np.where(events['event_team_status']=="home",events['y_fixed'],-events['y_fixed'])
+        events['event_distance'] = np.sqrt(((89 - events['x_fixed'])**2) + (events['y_fixed']**2))
+        events['event_angle'] = np.degrees(np.arctan2(abs(events['y_fixed']), abs(89 - events['x_fixed'])))
+    except TypeError:
+        print(f"No coordinates found for game {info['id'][0]}...")
+    
+        events['x_fixed'] = np.nan
+        events['y_fixed'] = np.nan
+        events['x_adj'] = np.nan
+        events['y_adj'] = np.nan
+        events['event_distance'] = np.nan
+        events['event_angle'] = np.nan
+    
     
     events['event_team_abbr'] = events['details.eventOwnerTeamId'].replace(teams)
 
@@ -517,6 +530,23 @@ def fix_names(shifts_df,json):
     
     return shifts_df.replace(replace,regex=True)
 
+def get_col():
+    return [
+        'season','season_type','game_id','game_date',"start_time","venue","venue_location",
+        'away_team_abbr','home_team_abbr','event_num','period','period_type',
+        'seconds_elapsed', "situation_code","strength_state","home_team_defending_side","shift_type",
+        "event_type_code","event_type","description","reason","penalty_duration","penalty_description",
+        "event_team_abbr",'num_on', 'players_on', 'ids_on', 'num_off', 'players_off', 'ids_off',
+        "event_team_status","event_player_1_id","event_player_2_id","event_player_3_id",
+        "event_player_1_name","event_player_2_name","event_player_3_name","event_player_1_pos","event_player_2_pos",
+        "event_player_3_pos","event_goalie_id",
+        "event_goalie_name","shot_type","zone_code","x","y","x_fixed","y_fixed","x_adj","y_adj",
+        "event_skaters","away_skaters","home_skaters",
+        "event_distance","event_angle","away_score","home_score", "away_fenwick", "home_fenwick",
+        "away_on_1","away_on_2","away_on_3","away_on_4","away_on_5","away_on_6","away_goalie",
+        "home_on_1","home_on_2","home_on_3","home_on_4","home_on_5","home_on_6","home_goalie"
+    ]
+
 def combine_data(json,html):
     #Given json pbp and html shifts, total game play-by-play data is provided with additional and corrected details
     df = pd.concat([json,html])
@@ -604,22 +634,6 @@ def combine_data(json,html):
 
     df['strength_state'] = df['event_skaters'].astype(str) + "v" + df['event_skaters_against'].astype(str)
     df['situation_code'] = np.where(df['situation_code'].isna(),df['away_goalie_in'].astype(str) + df['away_skaters'].astype(str) + df['home_skaters'].astype(str) + df['home_goalie_in'].astype(str),df['situation_code'])
-    
-    col = [
-        'season','season_type','game_id','game_date',"start_time","venue","venue_location",
-        'away_team_abbr','home_team_abbr','event_num','period','period_type',
-        'seconds_elapsed', "situation_code","strength_state","home_team_defending_side","shift_type",
-        "event_type_code","event_type","description","reason","penalty_duration","penalty_description",
-        "event_team_abbr",'num_on', 'players_on', 'ids_on', 'num_off', 'players_off', 'ids_off',
-        "event_team_status","event_player_1_id","event_player_2_id","event_player_3_id",
-        "event_player_1_name","event_player_2_name","event_player_3_name","event_player_1_pos","event_player_2_pos",
-        "event_player_3_pos","event_goalie_id",
-        "event_goalie_name","shot_type","zone_code","x","y","x_fixed","y_fixed","x_adj","y_adj",
-        "event_skaters","away_skaters","home_skaters",
-        "event_distance","event_angle","away_score","home_score", "away_fenwick", "home_fenwick",
-        "away_on_1","away_on_2","away_on_3","away_on_4","away_on_5","away_on_6","away_goalie",
-        "home_on_1","home_on_2","home_on_3","home_on_4","home_on_5","home_on_6","home_goalie"
-    ]
 
     #Return: complete play-by-play with all important data for each event in a provided game
-    return df[col].replace(r'^\s*$', np.nan, regex=True)
+    return df[get_col()].replace(r'^\s*$', np.nan, regex=True)

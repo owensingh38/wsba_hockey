@@ -26,30 +26,43 @@ def nhl_scrape_game(game_ids,split_shifts = False,remove = ['period-start','peri
         away_log = "https://www.nhl.com/scores/htmlreports/"+season+"/TV"+str(game_id)[-6:]+".HTM"
 
         #Retrieve raw data
-        json = rs.get(api).json()
-        home_shift = rs.get(home_log).content
-        away_shift = rs.get(away_log).content
+        try: 
+            json = rs.get(api).json()
+            home_shift = rs.get(home_log).content
+            away_shift = rs.get(away_log).content
 
-        if int(game_id[:4]) < 2010:
-            print()
-            raise Exception('Games before 2010-2011 are not available yet.')
-        else:
-            #Parse Json
-            pbp = parse_json(json) 
-        
-        #Create shifts
-        shifts = fix_names(combine_shifts(home_shift,away_shift,json,game_id),json)
+            if int(game_id[:4]) < 2010:
+                print()
+                raise Exception('Games before 2010-2011 are not available yet.')
+            else:
+                #Parse Json
+                pbp = parse_json(json) 
+            
+            #Create shifts
+            #If no shifts data exists only export play-by-play
+            try: 
+                shifts = fix_names(combine_shifts(home_shift,away_shift,json,game_id),json)
+                data = combine_data(pbp,shifts)
+            
+            except:
+                print(f"Cannot find or create shifts for game {game_id}...")
+                data = combine_data(pbp,pd.DataFrame(columns=get_col()))
 
-        #Combine and append data to list
-        data = combine_data(pbp,shifts)
-
-        pbps.append(data)
+            #Combine and append data to list
+            pbps.append(data)
+        except:
+            print(f"Unable to scrape game {game_id}.  Ensure the ID is properly inputted and formatted.")
+            pbps.append(pd.DataFrame())
 
     #Add all pbps together
     df = pd.concat(pbps)
 
     #Split pbp and shift events if necessary
     #Return: complete play-by-play with data removed or split as necessary
+    try: df['event_type']
+    except KeyError:
+        raise KeyError("No data is available to return.")
+
     if split_shifts == True:
         if len(remove) == 0:
             remove = ['change']
@@ -113,7 +126,7 @@ def nhl_scrape_schedule(season,start = "09-01", end = "08-01"):
     #Return: specificed schedule data (excluding preseason games)
     return df.loc[df['season_type']>1]
 
-def nhl_scrape_season(season,split_shifts = False, remove = ['period-start','period-end','challenge','stoppage','change'], start = "09-01", end = "08-01", local=False, local_path = "schedule/schedule.csv"):
+def nhl_scrape_season(season,split_shifts = False, remove = ['period-start','period-end','game-end','challenge','stoppage'], start = "09-01", end = "08-01", local=False, local_path = "schedule/schedule.csv"):
     #Given season, scrape all play-by-play occuring within the season
     # param 'season' - NHL season to scrape
     # param 'split_shifts' - boolean which splits pbp and shift events if true
@@ -146,29 +159,26 @@ def nhl_scrape_season(season,split_shifts = False, remove = ['period-start','per
                 df.append(data)
 
         except: 
-            #Errors should be rare; testing of eight full-season scraped produced just one missing game due to erro
-            #Games which have not happened yet also print as errors
-            print("An error occurred...")
-            errors.append(pd.DataFrame({"id":game_id}))
-    
-    pbp = pd.concat(df)
+            #Errors should be rare; testing of eight full-season scraped produced just one missing regular season game due to error
+            continue
+
+    #Missing data handled as a KeyError
+    try: pbp = pd.concat(df)
+    except: 
+        raise KeyError("No data is available to return.")
+        
     if split_shifts == True:
-        shifts = pd.concat(df_s)
+        try: shifts = pd.concat(df_s)
+        except: raise KeyError("No data is available to return.")
     else:
         ""
-    try: 
-        errors = pd.concat(errors)
-    except:
-        errors = pd.DataFrame()
 
     #Return: Complete pbp and shifts data for specified season as well as dataframe of game_ids which failed to return data
     if split_shifts == True:
         return {"pbp":pbp,
-            'shifts':shifts,
-            "errors":errors}
+            'shifts':shifts}
     else:
-        return {"pbp":pbp,
-            "errors":errors}
+        return pbp
 
 def nhl_scrape_seasons_info(seasons = []):
     #Returns info related to NHL seasons (by default, all seasons are included)
@@ -192,7 +202,7 @@ def nhl_scrape_seasons_info(seasons = []):
 
 def nhl_scrape_standings(arg = "now"):
     #Returns standings
-    # parma 'arg' - by default, this is "now" returning active NHL standings.  May also be a specific date formatted as YYYY-MM-DD
+    # param 'arg' - by default, this is "now" returning active NHL standings.  May also be a specific date formatted as YYYY-MM-DD
     
     if arg == "now":
         print("Scraping standings as of now...")
@@ -280,3 +290,28 @@ def nhl_scrape_player_info(roster):
     players['Player'] = players['Player'].replace(r'^\s*$', np.nan, regex=True)
 
     return players.loc[players['Player'].notna()].sort_values(by=['Player','Season','Team'])
+
+def repo_load_rosters(seasons = []):
+    #Returns roster data from repository
+    # param 'seasons' - list of seasons to include
+
+    data = pd.read_csv("rosters/nhl_rosters.csv")
+    if len(seasons)>0:
+        data = data.loc[data['season'].isin(seasons)]
+
+    return data
+
+def repo_load_schedule(seasons = []):
+    #Returns schedule data from repository
+    # param 'seasons' - list of seasons to include
+
+    data = pd.read_csv("schedule/schedule.csv")
+    if len(seasons)>0:
+        data = data.loc[data['season'].isin(seasons)]
+
+    return data
+
+def repo_load_teaminfo():
+    #Returns team data from repository
+
+    return pd.read_csv("teaminfo/nhl_teaminfo.csv")
