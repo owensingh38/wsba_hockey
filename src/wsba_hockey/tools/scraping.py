@@ -6,7 +6,8 @@ import pandas as pd
 import requests as rs
 import json as json_lib
 from bs4 import BeautifulSoup
-from wsba_hockey.tools.utils.shared import *
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from wsba_hockey.tools.globals import *
 warnings.filterwarnings('ignore')
 
 ### SCRAPING FUNCTIONS ###
@@ -36,7 +37,8 @@ def get_col():
         "event_player_1_name","event_player_2_name","event_player_3_name",
         "event_player_1_id","event_player_2_id","event_player_3_id",
         "event_player_1_pos","event_player_2_pos","event_player_3_pos",
-        "event_goalie_name","event_goalie_id",
+        "event_player_1_num","event_player_2_num","event_player_3_num",
+        "event_goalie_name","event_goalie_id","event_goalie_num",
         "shot_type","zone_code","x","y","x_fixed","y_fixed","x_adj","y_adj",
         "event_skaters","away_skaters","home_skaters",
         "event_distance","event_angle","event_length","seconds_since_last",
@@ -45,6 +47,8 @@ def get_col():
         "home_on_1","home_on_2","home_on_3","home_on_4","home_on_5","home_on_6","home_goalie",
         "away_on_1_id","away_on_2_id","away_on_3_id","away_on_4_id","away_on_5_id","away_on_6_id","away_goalie_id",
         "home_on_1_id","home_on_2_id","home_on_3_id","home_on_4_id","home_on_5_id","home_on_6_id","home_goalie_id",
+        "away_on_1_pos","away_on_2_pos","away_on_3_pos","away_on_4_pos","away_on_5_pos","away_on_6_pos",
+        "home_on_1_pos","home_on_2_pos","home_on_3_pos","home_on_4_pos","home_on_5_pos","home_on_6_pos",
         "event_coach","away_coach","home_coach"
     ]
 
@@ -79,7 +83,7 @@ def adjust_coords(pbp):
 def get_game_roster(json):
     #Given raw json data, return game rosters
     roster = pd.json_normalize(json['rosterSpots'])
-    roster['full_name'] = (roster['firstName.default'] + " " + roster['lastName.default']).str.upper()
+    roster['player_name'] = (roster['firstName.default'] + " " + roster['lastName.default']).str.upper()
 
     #Return: roster information
     return roster
@@ -163,7 +167,7 @@ def get_game_info(game_id):
             rost = roster.loc[roster['team_abbr']==abbr]
             
             #Now iterate through team players
-            for player,id,num,pos,team_abbr,key in zip(rost['full_name'],rost['playerId'],rost['sweaterNumber'],rost['positionCode'],rost['team_abbr'],rost['key']):
+            for player,id,num,pos,team_abbr,key in zip(rost['player_name'],rost['playerId'],rost['sweaterNumber'],rost['positionCode'],rost['team_abbr'],rost['key']):
                 roster_dict[team].update({str(num):[key, pos, player, team_abbr, id]})
 
         #Return: game information
@@ -276,7 +280,6 @@ def parse_json(info):
 
     #Return: dataframe with parsed game
     return events
-
 
 ## HTML PBP FUNCTIONS ##
 def strip_html_pbp(td,rosters):
@@ -657,10 +660,6 @@ def assign_target(data):
     #Revert sort and return dataframe
     return data.reset_index()
 
-def no_data(): 
-    #Allows the passage of espn_pbp data if it is not needed
-    pass
-
 def combine_pbp(info,sources):
     #Given game info, return complete play-by-play data for provided game
 
@@ -670,7 +669,7 @@ def combine_pbp(info,sources):
         espn_task = parse_espn(str(info['game_date']),info['away_team_abbr'],info['home_team_abbr'])
         json_type = 'espn'
     else:
-        espn_task = no_data()
+        espn_task = None
         json_type = 'nhl'
 
     json_task = parse_json(info)
@@ -686,7 +685,7 @@ def combine_pbp(info,sources):
         merge_col = ['period','seconds_elapsed','event_type','event_team_abbr']
         
         #Add additional information to espn_pbp with NHL json data
-        espn_pbp = pd.merge(espn_pbp,json_pbp,how='left')
+        espn_pbp = pd.merge(espn_pbp,json_pbp,how='left').drop_duplicates(subset='index')
 
         if sources:
             dirs_html = f'sources/{info['season']}/HTML/'
@@ -1020,7 +1019,7 @@ def combine_shifts(info,sources):
 
     #Create player information dicts to create on-ice names
     roster['playerId'] = roster['playerId'].astype(str)
-    players = roster.set_index("playerId")['full_name'].to_dict()
+    players = roster.set_index("playerId")['player_name'].to_dict()
 
     for i in range(0,7):
         if i == 6:
@@ -1042,8 +1041,8 @@ def combine_shifts(info,sources):
         data[col] = data[col].ffill()
 
     #Create strength state information
-    away_on = ['away_on_1_id','away_on_2_id','away_on_3_id','away_on_4_id','away_on_5_id','away_on_6_id',]
-    home_on = ['home_on_1_id','home_on_2_id','home_on_3_id','home_on_4_id','home_on_5_id','home_on_6_id',]
+    away_on = ['away_on_1_id','away_on_2_id','away_on_3_id','away_on_4_id','away_on_5_id','away_on_6_id']
+    home_on = ['home_on_1_id','home_on_2_id','home_on_3_id','home_on_4_id','home_on_5_id','home_on_6_id']
     data['away_skaters'] = data[away_on].replace(r'^\s*$', np.nan, regex=True).notna().sum(axis=1)
     data['home_skaters'] = data[home_on].replace(r'^\s*$', np.nan, regex=True).notna().sum(axis=1)
     data['strength_state'] = np.where(data['event_team_abbr']==data['away_team_abbr'],data['away_skaters'].astype(str)+"v"+data['home_skaters'].astype(str),data['home_skaters'].astype(str)+"v"+data['away_skaters'].astype(str))
@@ -1102,6 +1101,7 @@ def combine_data(info,sources):
     lag_events = ['stoppage','goal','period-end']
     lead_events = ['faceoff','period-end']
     period_end_secs = [0,1200,2400,3600,4800,6000,7200,8400,9600,10800]
+    
     #Define shifts by "line-change" or "on-the-fly"
     df['shift_type'] = np.where(df['event_type']=='change',np.where(np.logical_or(np.logical_or(df['event_type_last'].isin(lag_events),df['event_type_last_2'].isin(lag_events),df['event_type_next'].isin(lead_events)),df['seconds_elapsed'].isin(period_end_secs)),"line-change","on-the-fly"),"")
     df['description'] = df['description'].combine_first(df['event_team_abbr']+" CHANGE: "+df['shift_type'])
@@ -1110,8 +1110,13 @@ def combine_data(info,sources):
     except:
         ""
 
-    #Add time since last event and overall event length
+    #Add time since last event to calculate the length of the prior event
     df['seconds_since_last'] = df['seconds_elapsed'] - df['seconds_elapsed'].shift(1)
+    
+    #Shootout attempts cannot contribute to TOI
+    df['seconds_since_last'] = np.where(df['period_type']=='SO',0,df['seconds_since_last'])
+
+    #Event length
     df['event_length'] = df['seconds_since_last'].shift(-1)
 
     #Add fixed strength state column
@@ -1148,6 +1153,93 @@ def combine_data(info,sources):
         try: df[col]
         except: df[col] = ""
         df[col] = df[col].ffill()
+    
+    #Add event player numbers
+    roster = info['rosters']
+    num_dict = roster.set_index('playerId')['sweaterNumber']
+    
+    for i in range(3):
+        df[f'event_player_{i+1}_num'] = df[f'event_player_{i+1}_id'].map(num_dict)
+
+    df['event_goalie_num'] = df['event_goalie_id'].map(num_dict)
+
+    #Add on-ice player positions
+    roster['playerId'] = roster['playerId'].astype(float)
+    pos_dict = roster.set_index('playerId')['positionCode']
+    for venue in ['away', 'home']:
+        for i in range(6):
+            if f'{venue}_on_{i+1}_id' in df.columns:
+                df[f'{venue}_on_{i+1}_pos'] = df[f'{venue}_on_{i+1}_id'].replace(r'^\s*$', np.nan, regex=True).astype(float).map(pos_dict)
+            else:
+                df[f'{venue}_on_{i+1}_name'] = np.nan
+                df[f'{venue}_on_{i+1}_id'] = np.nan
+                df[f'{venue}_on_{i+1}_pos'] = np.nan
 
     #Return: complete play-by-play with all important data for each event in a provided game
     return df[[col for col in get_col() if col in df.columns.to_list()]].replace(r'^\s*$', np.nan, regex=True)
+
+## ROSTER FUNCTIONS ##
+def parse_game_roster(rost_df, game_id):
+    #Roster is already a dataframe so just standardize column names
+    roster = rost_df.rename(columns=COL_MAP['roster'])
+
+    #Add game id and season to link df to
+    roster['game_id'] = game_id
+
+    #Remove unwanted name columns
+    roster = roster.drop(columns=[col for col in roster.columns if 'Name' in col])
+
+    return roster
+    
+## NHL EDGE FUNCTIONS ##
+def edge_stat_entry(entry, season, season_type, type):
+    #Given entry (player or team id), season, season type, and type (player or team), return NHL Edge stats DataFrame
+
+    def fetch_cat(cat):
+        api = f'https://api-web.nhle.com/v1/edge/{type}-{cat}/{entry}/{season}/{season_type}'
+        try:
+            data = rs.get(api).json()
+        except:
+            return None
+
+        edge = pd.json_normalize(data)
+        edge['season'] = season
+
+        # Zone-time expansion
+        if cat in ('zone-time', 'zone-time-details') and 'zoneTimeDetails' in edge:
+            zones = edge['zoneTimeDetails'].iloc[0]
+            for zone in zones:
+                strength = zone['strengthCode']
+                for k, v in zone.items():
+                    if k != 'strengthCode':
+                        edge[f'{k}.{strength}'] = v
+
+        return edge
+
+    #Parallel fetch all categories
+    dfs = []
+    with ThreadPoolExecutor(max_workers=len(EDGE_CAT[type])) as executor:
+        futures = [executor.submit(fetch_cat, cat) for cat in EDGE_CAT[type]]
+        for future in as_completed(futures):
+            df = future.result()
+            if df is not None and not df.empty:
+                dfs.append(df)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    #Merge all category DataFrames
+    edge_df = dfs[0]
+    for f in dfs[1:]:
+        edge_df = pd.concat([edge_df, f.drop(columns='season', errors='ignore')], axis=1)
+
+    if type != 'team':
+        try:
+            edge_df['player_name'] = (
+                edge_df['player.firstName.default'] + " " + edge_df['player.lastName.default']
+            ).str.upper()
+        except KeyError:
+            edge_df['player_name'] = ''
+
+    #Return: NHL Edge stats DataFrame for entry provided
+    return edge_df

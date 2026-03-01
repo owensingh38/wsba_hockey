@@ -3,67 +3,21 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from matplotlib.lines import Line2D
+import wsba_hockey.wsba_main as wsba
 from matplotlib.colors import Normalize
 from hockey_rink import NHLRink
 from hockey_rink import CircularImage
 from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter
-from wsba_hockey.tools.xg_model import *
+from scipy.stats import binned_statistic_2d
 
 ### PLOTTING FUNCTIONS ###
 # Provided in this file are basic plotting functions for the WSBA Hockey Python package. #
 
-## GLOBAL VARIABLES ##
-
-fenwick_shots = ['missed-shot','shot-on-goal','goal']
-
-event_markers = {
-    'faceoff':'X',
-    'hit':'P',
-    'blocked-shot':'v',
-    'missed-shot':'o',
-    'shot-on-goal':'D',
-    'goal':'*',
-    'giveaway':'1',
-    'takeaway':'2',
-}
-
-metrics = {
-    'xG': 'xG',
-    'Goals': 'is_goal',
-    'Shots': 'is_shot',
-    'Fenwick': 'is_fenwick',
-    'Corsi': 'is_corsi',
-    'Giveaways': 'is_give',
-    'Takeaways': 'is_take'
-}
-
-metric_events = {
-    'xG': fenwick_shots,
-    'Goals': ['goal'],
-    'Shots': ['shot-on-goal','goal'],
-    'Fenwick': fenwick_shots,
-    'Corsi': fenwick_shots+['blocked-shot'],
-    'Giveaways': ['giveaway'],
-    'Takeaways': ['takeaway']
-}
-
-legend_elements = [
-    Line2D([0], [0], marker='o', color='blue', label='missed-shot', markersize=8, linestyle='None'),
-    Line2D([0], [0], marker='D', color='blue', label='shot-on-goal', markersize=8, linestyle='None'),
-    Line2D([0], [0], marker='*', color='blue', label='goal', markersize=8, linestyle='None'),
-]
-
-dir = os.path.dirname(os.path.realpath(__file__))
-info_path = os.path.join(dir,'teaminfo\\nhl_teaminfo.csv')
-img_path = os.path.join(dir,'utils\\wsba.png')
-schedule_path = os.path.join(dir,'schedule\\schedule.csv')
-
 def wsba_rink(display_range='offense',rotation = 0):
     rink = NHLRink(center_logo={
         "feature_class": CircularImage,
-        "image_path": img_path,
+        "image_path": wsba.IMG_PATH,
         "length": 25, "width": 25,
         "x": 0, "y": 0,
         "radius": 14,    
@@ -76,17 +30,19 @@ def wsba_rink(display_range='offense',rotation = 0):
             despine=True
         )
 
-def prep_plot_data(pbp,strengths,season_types=2,marker_dict=event_markers):
+def prep_plot_data(pbp,strengths,season_types=2,marker_dict=wsba.EVENT_MARKERS):
     try: pbp['xG']
     except:
-        pbp = wsba_xG(pbp)
+        pbp = wsba.wsba_xG(pbp)
         pbp['xG'] = np.where(pbp['xG'].isna(),0,pbp['xG'])
 
+    #This column is useful for finding player shots
     pbp['wsba_id'] = pbp['event_player_1_id'].astype(str)+pbp['season'].astype(str)+pbp['event_team_abbr']
     
-    pbp['event_team_abbr_2'] = np.where(pbp['event_team_venue']=='home',pbp['away_team_abbr'],pbp['home_team_abbr'])
+    pbp['event_team_abbr_for'] = pbp['event_team_abbr']
+    pbp['event_team_abbr_against'] = np.where(pbp['event_team_venue']=='home',pbp['away_team_abbr'],pbp['home_team_abbr'])
     
-    pbp['x_plot'] = np.where(pbp['x']<0,-pbp['y_adj'],pbp['y_adj'])
+    pbp['x_plot'] = np.where(pbp['x_adj']<0,-pbp['y_adj'],pbp['y_adj'])
     pbp['y_plot'] = abs(pbp['x_adj'])
 
     pbp['home_on_ice'] = pbp['home_on_1'].astype(str) + ";" + pbp['home_on_2'].astype(str) + ";" + pbp['home_on_3'].astype(str) + ";" + pbp['home_on_4'].astype(str) + ";" + pbp['home_on_5'].astype(str) + ";" + pbp['home_on_6'].astype(str)
@@ -101,7 +57,12 @@ def prep_plot_data(pbp,strengths,season_types=2,marker_dict=event_markers):
     pbp['onice_for_id'] = np.where(pbp['home_team_abbr']==pbp['event_team_abbr'],pbp['home_on_ice_id'],pbp['away_on_ice_id'])
     pbp['onice_against_id'] = np.where(pbp['away_team_abbr']==pbp['event_team_abbr'],pbp['home_on_ice_id'],pbp['away_on_ice_id'])
 
-    pbp['strength_state_2'] = pbp['strength_state'].str[::-1]
+    pbp['strength_state_for'] = pbp['strength_state']
+    pbp['strength_state_against'] = pbp['strength_state'].str[::-1]
+
+    pbp['onice_id'] = pbp['onice_for_id'].astype(str) + ";" + pbp['onice_against_id'].astype(str)
+    pbp['onice_name'] = pbp['onice_for_name'].astype(str) + ";" + pbp['onice_against_name'].astype(str)
+    pbp['event_team_abbrs'] = pbp['event_team_abbr_for'] + ";" + pbp['event_team_abbr_against']
 
     pbp['size'] = np.where(pbp['xG']<0.05,20,pbp['xG']*400)
     pbp['marker'] = pbp['event_type'].replace(marker_dict)
@@ -112,16 +73,65 @@ def prep_plot_data(pbp,strengths,season_types=2,marker_dict=event_markers):
     pbp = pbp.loc[pbp['season_type'].isin(season_types)]
 
     if strengths != 'all':
-        pbp = pbp.loc[(pbp['strength_state'].isin(strengths)) | (pbp['strength_state_2'].isin(strengths))]
+        pbp = pbp.loc[(pbp['strength_state_for'].isin(strengths)) | (pbp['strength_state_against'].isin(strengths))]
 
-    pbp['is_shot'] = pbp['event_type'].isin(metric_events['Shots']).astype(int)
-    pbp['is_fenwick'] = pbp['event_type'].isin(metric_events['Fenwick']).astype(int)
+    pbp['is_shot'] = pbp['event_type'].isin(wsba.METRIC_EVENTS['Shots']).astype(int)
+    pbp['is_fenwick'] = pbp['event_type'].isin(wsba.METRIC_EVENTS['Fenwick']).astype(int)
     pbp['is_give'] = (pbp['event_type'] == 'giveaway').astype(int)
     pbp['is_take'] = (pbp['event_type'] == 'takeaway').astype(int)
 
     return pbp
 
-def gen_heatmap(pbp, player, season, team, strengths, season_types = 2, metric = 'xG', strengths_title = None, title = None):
+def heatmap_data(df, sit, toi, metric):
+    #Helper function to create the data necessary to plot data
+
+    #Move shots to either the left (against) or the right(for)
+    if sit == 'for':
+        df['x'] = abs(df['x_adj'])
+        df['y'] = np.where(df['x_adj']<0,-df['y_adj'],df['y_adj'])
+        df['event_distance'] = abs(df['event_distance'].fillna(0))
+        df = df.loc[(df['event_distance']<=89)&(df['x']<=89)]
+
+        x_min = 0
+        x_max = 100
+
+    else:
+        df['x'] = -abs(df['x_adj'])
+        df['y'] = np.where(df['x_adj']>0,-df['y_adj'],df['y_adj'])
+        df['event_distance'] = -abs(df['event_distance'].fillna(0))
+        df = df.loc[(df['event_distance']>-89)&(df['x']>-89)]
+
+        x_min = -100
+        x_max = 0
+    
+    x_bins = np.linspace(x_min,x_max,(x_max-x_min)+1)
+    y_bins = np.linspace(-42.5,42.5,86)
+
+    #Using this binning allows a more seamless swap between different types of metrics
+    heatmap, _, _, _ = binned_statistic_2d(
+        df['x'],
+        df['y'],
+        df[wsba.METRIC_LOOKUP[metric]],
+        statistic='sum',
+        bins=[x_bins, y_bins]
+    )
+
+    heatmap = np.where(heatmap<0, 0, heatmap)
+    
+    #Convert toi to minutes and normalize each coordinate to per-sixty values
+    toi /= 60
+    heatmap = (heatmap / toi)*60
+
+    #Smooth out the array
+    heatmap_smooth = gaussian_filter(heatmap, sigma=3)
+
+    x_centers = (x_bins[:-1] + x_bins[1:]) / 2
+    y_centers = (y_bins[:-1] + y_bins[1:]) / 2
+    [x,y] = np.meshgrid(x_centers, y_centers)
+
+    return x, y, heatmap_smooth
+
+def gen_heatmap(pbp, player, season, team, strengths, season_types = 2, metric = 'Fenwick', compare = False, strengths_title = None, title = None):
     if isinstance(player, int):
         id_mod = '_id'
     elif player:
@@ -134,64 +144,51 @@ def gen_heatmap(pbp, player, season, team, strengths, season_types = 2, metric =
     
     pbp = prep_plot_data(pbp, strengths, season_types)
 
-    events = metric_events[metric]
+    events = wsba.METRIC_EVENTS[metric]
 
-    pbp = pbp.loc[pbp['event_type'].isin(events)]
+    #Quick helper filtering down the pbp df AFTER finding time_on_ice
+    def filter_pbp(df):
+        df = df.loc[df['event_type'].isin(events)]
 
-    pbp = pbp.fillna(0)
-    pbp = pbp.loc[(pbp['x_adj'].notna())&(pbp['y_adj'].notna())&(pbp['empty_net']==0)]
+        df = df.fillna(0)
+        df = df.loc[(df['x_adj'].notna())&(df['y_adj'].notna())&(df['empty_net']==0)]
+
+        return df
 
     fig, ax = plt.subplots(1, 1, figsize=(10,12), facecolor='w', edgecolor='k')
     wsba_rink(display_range='full')
 
-    for sit in ['for','against']:
-        df = pbp
-
-        if sit == 'for':
-            df['x'] = abs(df['x_adj'])
-            df['y'] = np.where(df['x_adj']<0,-df['y_adj'],df['y_adj'])
-            df['event_distance'] = abs(df['event_distance'].fillna(0))
-            df = df.loc[(df['event_distance']<=89)&(df['x']<=89)]
-
-            x_min = 0
-            x_max = 100
-
-        else:
-            df['x'] = -abs(df['x_adj'])
-            df['y'] = np.where(df['x_adj']>0,-df['y_adj'],df['y_adj'])
-            df['event_distance'] = -abs(df['event_distance'])
-            df = df.loc[(df['event_distance']>-89)&(df['x']>-89)]
-
-            x_min = -100
-            x_max = 0
-
-        if metric != 'xG':
-            df[metrics[metric]] = df[metrics[metric]].fillna(0).clip(0,1)
-
-        [x,y] = np.round(np.meshgrid(np.linspace(x_min,x_max,(x_max-x_min)),np.linspace(-42.5,42.5,85)))
-        xgoals = griddata((df['x'],df['y']),df[metrics[metric]],(x,y),method='cubic',fill_value=0)
-        xgoals = np.where(xgoals < 0,0,xgoals)
-
-        xgoals_smooth = gaussian_filter(xgoals,sigma=3)
+    #Find TOI for league and player/team
+    if compare:
+        league_shots_pre = pbp.loc[(pbp['strength_state_for'].isin(strengths) if strengths != 'all' else True)|
+                                (pbp['strength_state_against'].isin(strengths) if strengths != 'all' else True)]
         
-        if player:
-            if sit == 'for':
-                player_shots = df.loc[(df[f'onice_for{id_mod}'].str.contains(str(player)))&(df['event_team_abbr']==team)&(df['strength_state'].isin(strengths) if strengths != 'all' else True)]
-            else:
-                player_shots = df.loc[(df[f'onice_against{id_mod}'].str.contains(str(player)))&(df['event_team_abbr_2']==team)&(df['strength_state_2'].isin(strengths) if strengths != 'all' else True)]
+        #Multiply by two since each team must have their own TOI sum
+        league_toi = (league_shots_pre['event_length'].sum())*2
+
+    player_shots_pre = pbp.loc[(pbp[f'onice{id_mod}'].str.contains(str(player)))&
+                               (pbp[f'event_team_abbrs'].str.contains(team))] if player else pbp.loc[(pbp[f'event_team_abbrs'].str.contains(team))&
+                                                                                                     ((pbp['strength_state_for'].isin(strengths) if strengths != 'all' else True)|
+                                                                                                      (pbp['strength_state_against'].isin(strengths) if strengths != 'all' else True))]
+    player_toi = player_shots_pre['event_length'].sum()
+
+    for sit in ['for','against']:
+        if compare:
+            league_shots = filter_pbp(league_shots_pre)
+            league_shots = league_shots.loc[(league_shots[f'strength_state_{sit}'].isin(strengths) if strengths != 'all' else True)]
+            _, _, league_smooth = heatmap_data(league_shots, sit, league_toi, metric)
         else:
-            if sit == 'for':
-                player_shots = df.loc[(df['event_team_abbr']==team)]
-            else:
-                player_shots = df.loc[(df['event_team_abbr_2']==team)]
+            league_smooth = 0
 
-        [x,y] = np.round(np.meshgrid(np.linspace(x_min,x_max,(x_max-x_min)),np.linspace(-42.5,42.5,85)))
-        xgoals_player = griddata((player_shots['x'],player_shots['y']),player_shots[metrics[metric]],(x,y),method='cubic',fill_value=0)
-        xgoals_player = np.where(xgoals_player < 0,0,xgoals_player)
+        player_shots = filter_pbp(player_shots_pre.loc[(player_shots_pre[f'onice_{sit}{id_mod}'].str.contains(str(player)))&
+                                            (player_shots_pre[f'event_team_abbr_{sit}']==team)&
+                                            (player_shots_pre[f'strength_state_{sit}'].isin(strengths) if strengths != 'all' else True)
+                                            ] if player else player_shots_pre.loc[(player_shots_pre[f'event_team_abbr_{sit}']==team)&
+                                                                                  (player_shots_pre[f'strength_state_{sit}'].isin(strengths) if strengths != 'all' else True)])
 
-        xgoals_player_smooth = gaussian_filter(xgoals_player,sigma = 3)
-              
-        difference = xgoals_player_smooth - xgoals_smooth
+        x, y, player_smooth = heatmap_data(player_shots, sit, player_toi, metric)
+                
+        difference = player_smooth - league_smooth
         data_min= difference.min()
         data_max= difference.max()
     
@@ -201,13 +198,14 @@ def gen_heatmap(pbp, player, season, team, strengths, season_types = 2, metric =
             data_min = data_max * -1
         
         cont = ax.contourf(
-            x, y, difference,
+            x, y, difference.T,
             alpha=0.6,
             cmap='bwr',
             levels=np.linspace(data_min, data_max, 12),
             norm=Normalize(vmin=data_min,vmax=data_max),
             vmin=data_min,
-            vmax=data_max
+            vmax=data_max,
+            zorder=5
         )
     
     ax.text(-50, -50, 'Defense (Against)', ha='center', va='bottom', fontsize=12)
@@ -237,12 +235,12 @@ def gen_heatmap(pbp, player, season, team, strengths, season_types = 2, metric =
 
     return fig
 
-def plot_skater_shots(pbp, player, season, team, strengths, season_types = 2, strengths_title = None, title = None, marker_dict=event_markers, situation='for', legend=False):
+def plot_skater_shots(pbp, player, season, team, strengths, season_types = 2, strengths_title = None, title = None, marker_dict=wsba.EVENT_MARKERS, situation='for', legend=False):
     shots = ['goal','missed-shot','shot-on-goal']
     pbp = prep_plot_data(pbp,strengths,season_types,marker_dict)
     pbp = pbp.loc[(pbp['season']==season)&(pbp['event_type'].isin(shots))&((pbp['away_team_abbr']==team)|(pbp['home_team_abbr']==team))]
 
-    team_data = pd.read_csv(info_path)
+    team_data = pd.read_csv(wsba.INFO_PATH)
     team_color = list(team_data.loc[team_data['wsba_id']==f'{team}{season}','primary_color'])[0]
     team_color_2nd = list(team_data.loc[team_data['wsba_id']==f'{team}{season}','secondary_color'])[0]
 
@@ -253,7 +251,7 @@ def plot_skater_shots(pbp, player, season, team, strengths, season_types = 2, st
         player = player.upper()
 
     if situation in ['for','against']:
-        skater = pbp.loc[(pbp[f'onice_{situation}{id_mod}'].str.contains(str(player)))]
+        skater = pbp.loc[(pbp[f'onice_{situation}{id_mod}'].str.contains(str(player))) ]
         skater['color'] = np.where(skater[f'event_player_1{id_mod}']==player,team_color,team_color_2nd)
     else:
         skater = pbp.loc[pbp[f'event_player_1{id_mod}']==player]
@@ -264,7 +262,7 @@ def plot_skater_shots(pbp, player, season, team, strengths, season_types = 2, st
 
     for event in shots:
         plays = skater.loc[skater['event_type']==event]
-        ax.scatter(plays['x_plot'],plays['y_plot'],plays['size'],plays['color'],marker=event_markers[event],label=event,zorder=5)
+        ax.scatter(plays['x_plot'],plays['y_plot'],plays['size'],plays['color'],marker=wsba.EVENT_MARKERS[event],label=event,edgecolors='black' if event=='goal' else 'white',linewidths=0.75,zorder=5)
     
     ax.set_title(title) if title else ''
     ax.legend().set_visible(legend)
@@ -278,7 +276,7 @@ def plot_skater_shots(pbp, player, season, team, strengths, season_types = 2, st
 
     return fig
     
-def plot_game_events(pbp,game_id,events,strengths,marker_dict=event_markers,team_colors={'away':'secondary','home':'primary'},legend=False):
+def plot_game_events(pbp,game_id,events,strengths,marker_dict=wsba.EVENT_MARKERS,team_colors={'away':'secondary','home':'primary'},legend=False):
     pbp = prep_plot_data(pbp,strengths,season_types=[2,3],marker_dict=marker_dict)
     pbp = pbp.loc[(pbp['event_type'].isin(events))&(pbp['game_id']==game_id)]
     
@@ -289,7 +287,7 @@ def plot_game_events(pbp,game_id,events,strengths,marker_dict=event_markers,team
     away_xg = pbp.loc[pbp['event_team_venue']=='away','xG'].sum().astype(float).round(2)
     home_xg = pbp.loc[pbp['event_team_venue']=='home','xG'].sum().astype(float).round(2)
 
-    team_data = pd.read_csv(info_path)
+    team_data = pd.read_csv(wsba.INFO_PATH)
     team_info ={
         'away_color':'#000000' if list(team_data.loc[team_data['wsba_id']==f'{away_abbr}{season}','secondary_color'])[0]=='#FFFFFF' else list(team_data.loc[team_data['wsba_id']==f'{away_abbr}{season}',f'{team_colors['away']}_color'])[0],
         'home_color': list(team_data.loc[team_data['wsba_id']==f'{home_abbr}{season}',f'{team_colors['home']}_color'])[0],
@@ -304,12 +302,12 @@ def plot_game_events(pbp,game_id,events,strengths,marker_dict=event_markers,team
 
     for event in events:
         plays = pbp.loc[pbp['event_type']==event]
-        ax.scatter(plays['x_adj'],plays['y_adj'],plays['size'],plays['color'],marker=event_markers[event],edgecolors='black' if event=='goal' else 'white',linewidths=0.75,label=event,zorder=5)
+        ax.scatter(plays['x_adj'],plays['y_adj'],plays['size'],plays['color'],marker=wsba.EVENT_MARKERS[event],edgecolors='black' if event=='goal' else 'white',linewidths=0.75,label=event,zorder=5)
 
     ax.text(-50, -50, f'{away_abbr} xG: {away_xg}', ha='center', va='bottom', fontsize=10)
     ax.text(50, -50, f'{home_abbr} xG: {home_xg}', ha='center', va='bottom', fontsize=10)
     ax.set_title(f'{away_abbr} @ {home_abbr} - {date}')
-    ax.legend(handles=legend_elements, bbox_to_anchor =(0.5,-0.35), loc='lower center', ncol=1).set_visible(legend)
+    ax.legend(handles=wsba.LEGEND_ELEMENTS, bbox_to_anchor =(0.5,-0.35), loc='lower center', ncol=1).set_visible(legend)
 
     return fig
 
@@ -317,7 +315,7 @@ def plot_game_score(df):
     plots = {}
 
     teams = df['team_abbr'].drop_duplicates()
-    schedule = pd.read_csv(schedule_path)
+    schedule = pd.read_csv(wsba.SCHEDULE_PATH)
     game_date = schedule.loc[schedule['game_id']==df['game_id'].astype(int).iloc[0], 'game_date'].iloc[0]
 
     for team in teams:
@@ -402,7 +400,7 @@ def plot_game_score(df):
         
         legend = ax.legend(title='Components', bbox_to_anchor=(1.05, 1), loc='upper left')
 
-        logo_img = mpimg.imread(img_path)
+        logo_img = mpimg.imread(wsba.IMG_PATH)
         fig.canvas.draw()
         bbox = legend.get_window_extent().transformed(fig.transFigure.inverted())
         

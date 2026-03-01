@@ -1,0 +1,1845 @@
+import os
+import re
+import sys
+import time
+import operator
+import numpy as np
+from matplotlib.lines import Line2D
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup, SoupStrainer
+
+## GLOBAL VARIABLES ##
+COL_MAP = {
+    'schedule':{
+        'season':'season',
+        'id':'game_id',
+        'game_title':'game_title',
+        'game_date':'game_date',
+        'gameType':'season_type',
+        'neutralSite':'neutral_site',
+        'startTimeUTC':'start_time_utc',
+        'start_time_est':'start_time_est',
+        'easternUTCOffset':'eastern_utc',
+        'venueUTCOffset':'venue_utc',
+        'venueTimezone':'venue_timezone',
+        'gameState':'game_state',
+        'gameScheduleState':'game_schedule_state',
+        'tvBroadcasts':'tv_broadcasts',
+        'threeMinRecap':'three_min_recap',
+        'threeMinRecapFr':'three_min_recap_fr',
+        'condensedGame':'condensed_game',
+        'condensedGameFr':'condensed_game_fr',
+        'gameCenterLink':'gamecenter_link',
+        'venue.default':'venue',
+        'awayTeam.id':'away_team_id',
+        'homeTeam.id':'home_team_id',
+        'awayTeam.abbrev':'away_team_abbr',
+        'homeTeam.abbrev':'home_team_abbr',
+        'awayTeam.logo':'away_team_logo',
+        'homeTeam.logo':'home_team_logo',
+        'awayTeam.awaySplitSquad':'away_team_split_squad',
+        'homeTeam.homeSplitSquad':'home_team_split_squad',
+        'awayTeam.score':'away_score',
+        'homeTeam.score':'home_score',
+        'periodDescriptor.number':'period',
+        'periodDescriptor.maxRegulationPeriods':'period_max_regulation',
+        'periodDescriptor.periodType':'period_type',
+        'gameOutcome.lastPeriodType':'period_type_last',
+        'gameOutcome.otPeriods':'ot_periods',
+        'seriesUrl':'series_url',
+        'seriesStatus.round':'series_round',
+        'seriesStatus.seriesAbbrev':'series_abbr',
+        'seriesStatus.seriesTitle':'series_name',
+        'seriesStatus.seriesLetter':'series_letter',
+        'seriesStatus.neededToWin':'series_games_needed_to_win',
+        'seriesStatus.gameNumberOfSeries':'series_game_num',
+        'seriesStatus.topSeedTeamAbbrev':'top_seed_team_abbr',
+        'seriesStatus.bottomSeedTeamAbbrev':'bottom_seed_team_abbr',
+        'seriesStatus.topSeedWins':'top_seed_wins',
+        'seriesStatus.bottomSeedWins':'bottom_seed_wins',
+        'clock.timeRemaining':'period_time_remaining',
+        'clock.secondsRemaining':'period_seconds_remaining',
+        'clock.running':'period_clock_running',
+        'clock.inIntermission':'game_in_intermission'
+    },
+    'season_info':{
+        'id':'season',
+        'formattedSeasonId':'season_name',
+        'seasonOrdinal':'season_ordinal',
+        'startDate':'start_date',
+        'endDate':'end_date',
+        'numberOfGames':'games_num',
+        'totalRegularSeasonGames':'regular_season_total_games_num',
+        'totalPlayoffGames':'playoffs_total_games_num',
+        'regularSeasonStartDate':'regular_season_start_date',
+        'regularSeasonEndDate':'regular_season_end_date',
+        'standingsStart':'standings_start_date',
+        'standingsEnd':'standings_end_date',
+        'allStarGameInUse':'all_star_game',
+        'conferencesInUse':'conferences',
+        'divisionsInUse':'divisions',
+        'wildcardInUse':'wildcard',
+        'entryDraftInUse':'entry_draft',
+        'nhlStanleyCupOwner':'nhl_stanley_cup_owner',
+        'olympicsParticipation':'olympic_participation',
+        'tiesInUse':'ties',
+        'pointForOTLossInUse':'ot_loss_point',
+        'regulationWinsInUse':'reg_wins',
+        'rowInUse':'row',
+        'supplementalDraftInUse':'supplemental_draft'
+    },
+    'standings': {
+        "clinchIndicator": "clinch_indicator",
+        "conferenceAbbrev": "conference_abbr",
+        "conferenceHomeSequence": "conference_home_sequence",
+        "conferenceL10Sequence": "conference_last_ten_sequence",
+        "conferenceName": "conference_name",
+        "conferenceRoadSequence": "conference_road_sequence",
+        "conferenceSequence": "conference_sequence",
+        "date": "date",
+        "divisionAbbrev": "division_abbr",
+        "divisionHomeSequence": "division_home_sequence",
+        "divisionL10Sequence": "division_last_ten_sequence",
+        "divisionName": "division_name",
+        "divisionRoadSequence": "division_road_sequence",
+        "divisionSequence": "division_sequence",
+        "gameTypeId": "game_type_id",
+        "gamesPlayed": "games_played",
+        "goalDifferential": "goal_differential",
+        "goalDifferentialPctg": "goal_differential_percentage",
+        "goalAgainst": "goals_against",
+        "goalFor": "goals_for",
+        "goalsForPctg": "goals_for_percentage",
+        "homeGamesPlayed": "home_games_played",
+        "homeGoalDifferential": "home_goal_differential",
+        "homeGoalsAgainst": "home_goals_against",
+        "homeGoalsFor": "home_goals_for",
+        "homeLosses": "home_losses",
+        "homeOtLosses": "home_overtime_losses",
+        "homePoints": "home_points",
+        "homeRegulationPlusOtWins": "home_regulation_overtime_wins",
+        "homeRegulationWins": "home_regulation_wins",
+        "homeTies": "home_ties",
+        "homeWins": "home_wins",
+        "l10GamesPlayed": "last_ten_games_played",
+        "l10GoalDifferential": "last_ten_goal_differential",
+        "l10GoalsAgainst": "last_ten_goals_against",
+        "l10GoalsFor": "last_ten_goals_for",
+        "l10Losses": "last_ten_losses",
+        "l10OtLosses": "last_ten_overtime_losses",
+        "l10Points": "last_ten_points",
+        "l10RegulationPlusOtWins": "last_ten_regulation_overtime_wins",
+        "l10RegulationWins": "last_ten_regulation_wins",
+        "l10Ties": "last_ten_ties",
+        "l10Wins": "last_ten_wins",
+        "leagueHomeSequence": "league_home_sequence",
+        "leagueL10Sequence": "league_last_ten_sequence",
+        "leagueRoadSequence": "league_road_sequence",
+        "leagueSequence": "league_sequence",
+        "losses": "losses",
+        "otLosses": "overtime_losses",
+        "pointPctg": "points_percentage",
+        "points": "points",
+        "regulationPlusOtWinPctg": "regulation_overtime_win_percentage",
+        "regulationPlusOtWins": "regulation_overtime_wins",
+        "regulationWinPctg": "regulation_win_percentage",
+        "regulationWins": "regulation_wins",
+        "roadGamesPlayed": "road_games_played",
+        "roadGoalDifferential": "road_goal_differential",
+        "roadGoalsAgainst": "road_goals_against",
+        "roadGoalsFor": "road_goals_for",
+        "roadLosses": "road_losses",
+        "roadOtLosses": "road_overtime_losses",
+        "roadPoints": "road_points",
+        "roadRegulationPlusOtWins": "road_regulation_overtime_wins",
+        "roadRegulationWins": "road_regulation_wins",
+        "roadTies": "road_ties",
+        "roadWins": "road_wins",
+        "seasonId": "season",
+        "shootoutLosses": "shootout_losses",
+        "shootoutWins": "shootout_wins",
+        "streakCode": "streak_code",
+        "streakCount": "streak_count",
+        "teamLogo": "team_logo",
+        "ties": "ties",
+        "waiversSequence": "waivers_sequence",
+        "wildcardSequence": "wildcard_sequence",
+        "winPctg": "win_percentage",
+        "wins": "wins",
+        "placeName.default": "place_name",
+        "teamName.default": "team_name",
+        "teamCommonName.default": "team_common_name",
+        "teamAbbrev.default": "team_abbr",
+        "seriesUrl": "series_url",
+        "seriesTitle": "series_title",
+        "seriesAbbrev": "series_abbr",
+        "seriesLetter": "series_letter",
+        "playoffRound": "playoff_round",
+        "topSeedRank": "top_seed_rank",
+        "topSeedRankAbbrev": "top_seed_rank_abbr",
+        "topSeedWins": "top_seed_wins",
+        "bottomSeedRank": "bottom_seed_rank",
+        "bottomSeedRankAbbrev": "bottom_seed_rank_abbr",
+        "bottomSeedWins": "bottom_seed_wins",
+        "winningTeamId": "winning_team_id",
+        "losingTeamId": "losing_team_id",
+        "topSeedTeam.id": "top_seed_team_id",
+        "topSeedTeam.abbrev": "top_seed_team_abbr",
+        "topSeedTeam.name.default": "top_seed_team_name",
+        "topSeedTeam.commonName.default": "top_seed_team_common_name",
+        "topSeedTeam.placeNameWithPreposition.default": "top_seed_team_place_name",
+        "topSeedTeam.logo": "top_seed_team_logo",
+        "topSeedTeam.darkLogo": "top_seed_team_dark_logo",
+        "bottomSeedTeam.id": "bottom_seed_team_id",
+        "bottomSeedTeam.abbrev": "bottom_seed_team_abbr",
+        "bottomSeedTeam.name.default": "bottom_seed_team_name",
+        "bottomSeedTeam.commonName.default": "bottom_seed_team_common_name",
+        "bottomSeedTeam.placeNameWithPreposition.default": "bottom_seed_team_place_name",
+        "bottomSeedTeam.logo": "bottom_seed_team_logo",
+        "bottomSeedTeam.darkLogo": "bottom_seed_team_dark_logo",
+        "seriesLogo": "series_logo",
+        "wsba_id": "wsba_id"
+    },
+    'roster':{
+        "id": "player_id",
+        "playerId": "player_id",
+        "gameId": "game_id",
+        "teamId": "team_id",
+        "team_abbr": "team_abbr",
+        "descID": "desc_id",
+        "season": "season",
+        "headshot": "headshot",
+        "sweaterNumber": "sweater_number",
+        "positionCode": "position",
+        "heading_position": "heading_position",
+        "shootsCatches": "handedness",
+        "heightInInches": "height_in",
+        "weightInPounds": "weight_lbs",
+        "heightInCentimeters": "height_cm",
+        "weightInKilograms": "weight_kg",
+        "birthDate": "birth_date",
+        "birthCountry": "birth_country",
+        "player_name":"player_name",
+        "firstName.default": "player_first_name",
+        "lastName.default": "player_last_name",
+        "birthCity.default": "birth_city",
+        "birthStateProvince.default": "birth_state_province"
+    },
+    'prospects':{
+        "id": "player_id",
+        "headshot": "headshot",
+        "sweaterNumber": "sweater_number",
+        "positionCode": "position",
+        "shootsCatches": "handedness",
+        "heightInInches": "height_in",
+        "weightInPounds": "weight_lbs",
+        "heightInCentimeters": "height_cm",
+        "weightInKilograms": "weight_kg",
+        "birthDate": "birth_date",
+        "birthCountry": "birth_country",
+        "player_name":"player_name",
+        "firstName.default": "player_first_name",
+        "lastName.default": "player_last_name",
+        "birthCity.default": "birth_city",
+        "birthStateProvince.default": "birth_state_province",
+    },
+    'player_info':{
+        'playerId': 'player_id',
+        'player_name': 'player_name',
+        'isActive': 'is_active',
+        'currentTeamId': 'current_team_id',
+        'currentTeamAbbrev': 'current_team_abbr',
+        'badges': 'badges',
+        'teamLogo': 'team_logo',
+        'sweaterNumber': 'sweater_number',
+        'position': 'position',
+        'headshot': 'headshot',
+        'heroImage': 'hero_image',
+        'heightInInches': 'height_in',
+        'heightInCentimeters': 'height_cm',
+        'weightInPounds': 'weight_lbs',
+        'weightInKilograms': 'weight_kg',
+        'birthDate': 'birth_date',
+        'birthCountry': 'birth_country',
+        'shootsCatches': 'handedness',
+        'playerSlug': 'player_slug',
+        'inTop100AllTime': 'in_top_100_all_time',
+        'inHHOF': 'in_hhof',
+        'shopLink': 'shop_link',
+        'twitterLink': 'twitter_link',
+        'watchLink': 'watch_link',
+        'last5Games': 'last_5_games',
+        'seasonTotals': 'season_totals',
+        'awards': 'awards',
+        'currentTeamRoster': 'current_team_roster',
+        'fullTeamName.default': 'full_team_name',
+        'teamCommonName.default': 'team_common_name',
+        'teamPlaceNameWithPreposition.default': 'team_place_name_with_preposition',
+        'firstName.default': 'player_first_name',
+        'lastName.default': 'player_last_name',
+        'birthCity.default': 'birth_city',
+        'birthStateProvince.default': 'birth_state_province',
+        'draftDetails.year': 'draft_year',
+        'draftDetails.teamAbbrev': 'draft_team_abbr',
+        'draftDetails.round': 'draft_round',
+        'draftDetails.pickInRound': 'draft_pick_in_round',
+        'draftDetails.overallPick': 'draft_overall_pick',
+    },
+    'team_info':{
+        "id":"team_id",
+        "franchiseId":"franchise_id",
+        "fullName":"team_name",
+        "leagueId":"league_id",
+        "triCode":"team_abbr",
+        "logo_light":"logo_light",
+        "logo_dark":"logo_dark",
+        "country3Code":"country_abbr",
+        "countryCode":"country_abbr_2",
+        "countryName":"country_name",
+        "hasPlayerStats":"has_player_stats",
+        "imageUrl":"country_flag_large",
+        "isActive":"is_active",
+        "nationalityName":"nationality",
+        "olympicUrl":"olympic_url",
+        "thumbnailUrl":"thumbnail_url"
+    },
+    'draft_rankings':{
+        "id": "player_id",
+        "player_name":"player_name",
+        "firstName": "player_first_name",
+        "lastName": "player_last_name",
+        "headshot": "headshot",
+        "sweaterNumber": "sweater_number",
+        "positionCode": "position",
+        "shootsCatches": "handedness",
+        "heightInInches": "height_in",
+        "weightInPounds": "weight_lbs",
+        "heightInCentimeters": "height_cm",
+        "weightInKilograms": "weight_kg",
+        "birthDate": "birth_date",
+        "birthCity": "birth_city",
+        "birthCountry": "birth_country",
+        "birthStateProvince": "birth_state_province",
+        "lastAmateurClub": "last_amateur_club",
+        "lastAmateurLeague": "last_amateur_league",
+        "midtermRank":"midterm_rank",
+        "finalRank":"final_rank"
+    },
+    'edge':{
+        'player_name':'player_name',
+        'season':'season',
+        'wsba_id':'wsba_id',
+        'seasonsWithEdgeStats':'seasons_with_edge_stats',
+        'sogSummary':'sog_summary',
+        'sogDetails':'sog_details',
+        'player.id':'player_id',
+        'player.firstName.default':'player_first_name',
+        'player.lastName.default':'player_last_name',
+        'player.birthDate':'player_birth_date',
+        'player.shootsCatches':'handedness',
+        'player.sweaterNumber':'sweater_number',
+        'player.position':'position',
+        'player.headshot':'headshot',
+        'player.goals':'goals',
+        'player.assists':'assists',
+        'player.points':'points',
+        'player.gamesPlayed':'games_played',
+        'player.team.commonName.default':'team_name',
+        'player.team.placeNameWithPreposition.default':'team_place_name',
+        'player.team.placeNameWithPreposition.fr':'team_place_name_fr',
+        'player.team.abbrev':'team_abbr',
+        'player.team.teamLogo.light':'team_logo_light',
+        'player.team.teamLogo.dark':'team_logo_dark',
+        'team.commonName.default':'team_name',
+        'team.placeNameWithPreposition.default':'team_place_name',
+        'team.placeNameWithPreposition.fr':'team_place_name_fr',
+        'team.abbrev':'team_abbr',
+        'team.teamLogo.light':'team_logo_light',
+        'team.teamLogo.dark':'team_logo_dark',
+        'topShotSpeed.imperial':'top_shot_speed',
+        'topShotSpeed.metric':'top_shot_speed_metric',
+        'topShotSpeed.percentile':'top_shot_speed_percentile',
+        'topShotSpeed.leagueAvg.imperial':'league_avg_top_shot_speed',
+        'topShotSpeed.leagueAvg.metric':'league_avg_top_shot_speed_metric',
+        'topShotSpeed.overlay.player.firstName.default':'top_shot_speed_overlay_player_first_name',
+        'topShotSpeed.overlay.player.lastName.default':'top_shot_speed_overlay_player_last_name',
+        'topShotSpeed.overlay.gameDate':'top_shot_speed_overlay_game_date',
+        'topShotSpeed.overlay.awayTeam.abbrev':'top_shot_speed_overlay_away_team',
+        'topShotSpeed.overlay.awayTeam.score':'top_shot_speed_overlay_away_score',
+        'topShotSpeed.overlay.homeTeam.abbrev':'top_shot_speed_overlay_home_team',
+        'topShotSpeed.overlay.homeTeam.score':'top_shot_speed_overlay_home_score',
+        'topShotSpeed.overlay.gameOutcome.lastPeriodType':'top_shot_speed_overlay_last_period_type',
+        'topShotSpeed.overlay.periodDescriptor.maxRegulationPeriods':'top_shot_speed_overlay_max_regulation_periods',
+        'topShotSpeed.overlay.periodDescriptor.number':'top_shot_speed_overlay_period_number',
+        'topShotSpeed.overlay.periodDescriptor.periodType':'top_shot_speed_overlay_period_type',
+        'topShotSpeed.overlay.timeInPeriod':'top_shot_speed_overlay_time_in_period',
+        'topShotSpeed.overlay.gameType':'top_shot_speed_overlay_game_type',
+        'skatingSpeed.speedMax.imperial':'max_speed',
+        'skatingSpeed.speedMax.metric':'max_speed_metric',
+        'skatingSpeed.speedMax.percentile':'max_speed_percentile',
+        'skatingSpeed.speedMax.leagueAvg.imperial':'league_avg_max_speed',
+        'skatingSpeed.speedMax.leagueAvg.metric':'league_avg_max_speed_metric',
+        'skatingSpeed.speedMax.overlay.player.firstName.default':'max_speed_overlay_player_first_name',
+        'skatingSpeed.speedMax.overlay.player.lastName.default':'max_speed_overlay_player_last_name',
+        'skatingSpeed.speedMax.overlay.gameDate':'max_speed_overlay_game_date',
+        'skatingSpeed.speedMax.overlay.awayTeam.abbrev':'max_speed_overlay_away_team',
+        'skatingSpeed.speedMax.overlay.awayTeam.score':'max_speed_overlay_away_score',
+        'skatingSpeed.speedMax.overlay.homeTeam.abbrev':'max_speed_overlay_home_team',
+        'skatingSpeed.speedMax.overlay.homeTeam.score':'max_speed_overlay_home_score',
+        'skatingSpeed.speedMax.overlay.gameOutcome.lastPeriodType':'max_speed_overlay_last_period_type',
+        'skatingSpeed.speedMax.overlay.periodDescriptor.maxRegulationPeriods':'max_speed_overlay_max_regulation_periods',
+        'skatingSpeed.speedMax.overlay.periodDescriptor.number':'max_speed_overlay_period_number',
+        'skatingSpeed.speedMax.overlay.periodDescriptor.periodType':'max_speed_overlay_period_type',
+        'skatingSpeed.speedMax.overlay.timeInPeriod':'max_speed_overlay_time_in_period',
+        'skatingSpeed.speedMax.overlay.gameType':'max_speed_overlay_game_type',
+        'skatingSpeed.burstsOver20.value':'bursts_over_20',
+        'skatingSpeed.burstsOver20.percentile':'bursts_over_20_percentile',
+        'skatingSpeed.burstsOver20.leagueAvg.value':'league_avg_bursts_over_20',
+        'totalDistanceSkated.imperial':'total_distance_skated',
+        'totalDistanceSkated.metric':'total_distance_skated_metric',
+        'totalDistanceSkated.percentile':'total_distance_skated_percentile',
+        'totalDistanceSkated.leagueAvg.imperial':'league_avg_total_distance_skated',
+        'totalDistanceSkated.leagueAvg.metric':'league_avg_total_distance_skated_metric',
+        'zoneTimeDetails.offensiveZonePctg':'offensive_zone_percentage',
+        'zoneTimeDetails.offensiveZonePercentile':'offensive_zone_percentile',
+        'zoneTimeDetails.offensiveZoneLeagueAvg':'league_avg_offensive_zone',
+        'zoneTimeDetails.neutralZonePctg':'neutral_zone_percentage',
+        'zoneTimeDetails.neutralZonePercentile':'neutral_zone_percentile',
+        'zoneTimeDetails.neutralZoneLeagueAvg':'league_avg_neutral_zone',
+        'zoneTimeDetails.defensiveZonePctg':'defensive_zone_percentage',
+        'zoneTimeDetails.defensiveZonePercentile':'defensive_zone_percentile',
+        'zoneTimeDetails.defensiveZoneLeagueAvg':'league_avg_defensive_zone',
+        'season_type':'season_type',
+        'skatingDistanceLast10':'skating_distance_last_10',
+        'skatingDistanceDetails':'skating_distance_details',
+        'topSkatingSpeeds':'top_skating_speeds',
+        'skatingSpeedDetails.maxSkatingSpeed.imperial':'max_skating_speed',
+        'skatingSpeedDetails.maxSkatingSpeed.metric':'max_skating_speed_metric',
+        'skatingSpeedDetails.maxSkatingSpeed.percentile':'max_skating_speed_percentile',
+        'skatingSpeedDetails.maxSkatingSpeed.leagueAvg.imperial':'league_avg_max_skating_speed',
+        'skatingSpeedDetails.maxSkatingSpeed.leagueAvg.metric':'league_avg_max_skating_speed_metric',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.player.firstName.default':'max_skating_speed_overlay_player_first_name',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.player.lastName.default':'max_skating_speed_overlay_player_last_name',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.gameDate':'max_skating_speed_overlay_game_date',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.awayTeam.abbrev':'max_skating_speed_overlay_away_team',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.awayTeam.score':'max_skating_speed_overlay_away_score',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.homeTeam.abbrev':'max_skating_speed_overlay_home_team',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.homeTeam.score':'max_skating_speed_overlay_home_score',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.gameOutcome.lastPeriodType':'max_skating_speed_overlay_last_period_type',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.periodDescriptor.maxRegulationPeriods':'max_skating_speed_overlay_max_regulation_periods',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.periodDescriptor.number':'max_skating_speed_overlay_period_number',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.periodDescriptor.periodType':'max_skating_speed_overlay_period_type',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.timeInPeriod':'max_skating_speed_overlay_time_in_period',
+        'skatingSpeedDetails.maxSkatingSpeed.overlay.gameType':'max_skating_speed_overlay_game_type',
+        'skatingSpeedDetails.burstsOver22.value':'bursts_over_22',
+        'skatingSpeedDetails.burstsOver22.percentile':'bursts_over_22_percentile',
+        'skatingSpeedDetails.burstsOver22.leagueAvg':'league_avg_bursts_over_22',
+        'skatingSpeedDetails.bursts20To22.value':'bursts_20_to_22',
+        'skatingSpeedDetails.bursts20To22.percentile':'bursts_20_to_22_percentile',
+        'skatingSpeedDetails.bursts20To22.leagueAvg':'league_avg_bursts_20_to_22',
+        'skatingSpeedDetails.bursts18To20.value':'bursts_18_to_20',
+        'skatingSpeedDetails.bursts18To20.percentile':'bursts_18_to_20_percentile',
+        'skatingSpeedDetails.bursts18To20.leagueAvg':'league_avg_bursts_18_to_20',
+        'zoneStarts.offensiveZoneStartsPctg':'offensive_zone_starts_percentage',
+        'zoneStarts.offensiveZoneStartsPctgPercentile':'offensive_zone_starts_percentile',
+        'zoneStarts.neutralZoneStartsPctg':'neutral_zone_starts_percentage',
+        'zoneStarts.neutralZoneStartsPctgPercentile':'neutral_zone_starts_percentile',
+        'zoneStarts.defensiveZoneStartsPctg':'defensive_zone_starts_percentage',
+        'zoneStarts.defensiveZoneStartsPctgPercentile':'defensive_zone_starts_percentile',
+        'offensiveZonePctg.all':'offensive_zone_percentage_all_strengths',
+        'offensiveZonePercentile.all':'offensive_zone_percentile_all_strengths',
+        'offensiveZoneLeagueAvg.all':'league_avg_offensive_zone_all_strengths',
+        'neutralZonePctg.all':'neutral_zone_percentage_all_strengths',
+        'neutralZonePercentile.all':'neutral_zone_percentile_all_strengths',
+        'neutralZoneLeagueAvg.all':'league_avg_neutral_zone_all_strengths',
+        'defensiveZonePctg.all':'defensive_zone_percentage_all_strengths',
+        'defensiveZonePercentile.all':'defensive_zone_percentile_all_strengths',
+        'defensiveZoneLeagueAvg.all':'league_avg_defensive_zone_all_strengths',
+        'offensiveZonePctg.es':'offensive_zone_percentage_even_strength',
+        'offensiveZonePercentile.es':'offensive_zone_percentile_even_strength',
+        'offensiveZoneLeagueAvg.es':'league_avg_offensive_zone_even_strength',
+        'neutralZonePctg.es':'neutral_zone_percentage_even_strength',
+        'neutralZonePercentile.es':'neutral_zone_percentile_even_strength',
+        'neutralZoneLeagueAvg.es':'league_avg_neutral_zone_even_strength',
+        'defensiveZonePctg.es':'defensive_zone_percentage_even_strength',
+        'defensiveZonePercentile.es':'defensive_zone_percentile_even_strength',
+        'defensiveZoneLeagueAvg.es':'league_avg_defensive_zone_even_strength',
+        'offensiveZonePctg.pp':'offensive_zone_percentage_power_play',
+        'offensiveZonePercentile.pp':'offensive_zone_percentile_power_play',
+        'offensiveZoneLeagueAvg.pp':'league_avg_offensive_zone_power_play',
+        'neutralZonePctg.pp':'neutral_zone_percentage_power_play',
+        'neutralZonePercentile.pp':'neutral_zone_percentile_power_play',
+        'neutralZoneLeagueAvg.pp':'league_avg_neutral_zone_power_play',
+        'defensiveZonePctg.pp':'defensive_zone_percentage_power_play',
+        'defensiveZonePercentile.pp':'defensive_zone_percentile_power_play',
+        'defensiveZoneLeagueAvg.pp':'league_avg_defensive_zone_power_play',
+        'offensiveZonePctg.pk':'offensive_zone_percentage_penalty_kill',
+        'offensiveZonePercentile.pk':'offensive_zone_percentile_penalty_kill',
+        'offensiveZoneLeagueAvg.pk':'league_avg_offensive_zone_penalty_kill',
+        'neutralZonePctg.pk':'neutral_zone_percentage_penalty_kill',
+        'neutralZonePercentile.pk':'neutral_zone_percentile_penalty_kill',
+        'neutralZoneLeagueAvg.pk':'league_avg_neutral_zone_penalty_kill',
+        'defensiveZonePctg.pk':'defensive_zone_percentage_penalty_kill',
+        'defensiveZonePercentile.pk':'defensive_zone_percentile_penalty_kill',
+        'defensiveZoneLeagueAvg.pk':'league_avg_defensive_zone_penalty_kill',
+        'offensiveZoneRank.all':'offensive_zone_rank_all_strengths',
+        'neutralZoneRank.all':'neutral_zone_rank_all_strengths',
+        'defensiveZoneRank.all':'defensive_zone_rank_all_strengths',
+        'offensiveZoneRank.es':'offensive_zone_rank_even_strength',
+        'neutralZoneRank.es':'neutral_zone_rank_even_strength',
+        'defensiveZoneRank.es':'defensive_zone_rank_even_strength',
+        'offensiveZoneRank.pp':'offensive_zone_rank_power_play',
+        'neutralZoneRank.pp':'neutral_zone_rank_power_play',
+        'defensiveZoneRank.pp':'defensive_zone_rank_power_play',
+        'offensiveZoneRank.pk':'offensive_zone_rank_penalty_kill',
+        'neutralZoneRank.pk':'neutral_zone_rank_penalty_kill',
+        'defensiveZoneRank.pk':'defensive_zone_rank_penalty_kill',            'hardestShots':'hardest_shots',
+        'shotSpeedDetails.topShotSpeed.imperial':'top_shot_speed',
+        'shotSpeedDetails.topShotSpeed.metric':'top_shot_speed_metric',
+        'shotSpeedDetails.topShotSpeed.percentile':'top_shot_speed_percentile',
+        'shotSpeedDetails.topShotSpeed.leagueAvg.imperial':'league_avg_top_shot_speed',
+        'shotSpeedDetails.topShotSpeed.leagueAvg.metric':'league_avg_top_shot_speed_metric',
+        'shotSpeedDetails.topShotSpeed.overlay.player.firstName.default':'top_shot_speed_overlay_player_first_name',
+        'shotSpeedDetails.topShotSpeed.overlay.player.lastName.default':'top_shot_speed_overlay_player_last_name',
+        'shotSpeedDetails.topShotSpeed.overlay.gameDate':'top_shot_speed_overlay_game_date',
+        'shotSpeedDetails.topShotSpeed.overlay.awayTeam.abbrev':'top_shot_speed_overlay_away_team',
+        'shotSpeedDetails.topShotSpeed.overlay.awayTeam.score':'top_shot_speed_overlay_away_score',
+        'shotSpeedDetails.topShotSpeed.overlay.homeTeam.abbrev':'top_shot_speed_overlay_home_team',
+        'shotSpeedDetails.topShotSpeed.overlay.homeTeam.score':'top_shot_speed_overlay_home_score',
+        'shotSpeedDetails.topShotSpeed.overlay.gameOutcome.lastPeriodType':'top_shot_speed_overlay_last_period_type',
+        'shotSpeedDetails.topShotSpeed.overlay.gameOutcome.otPeriods':'top_shot_speed_overlay_ot_periods',
+        'shotSpeedDetails.topShotSpeed.overlay.periodDescriptor.maxRegulationPeriods':'top_shot_speed_overlay_max_regulation_periods',
+        'shotSpeedDetails.topShotSpeed.overlay.periodDescriptor.number':'top_shot_speed_overlay_period_number',
+        'shotSpeedDetails.topShotSpeed.overlay.periodDescriptor.periodType':'top_shot_speed_overlay_period_type',
+        'shotSpeedDetails.topShotSpeed.overlay.timeInPeriod':'top_shot_speed_overlay_time_in_period',
+        'shotSpeedDetails.topShotSpeed.overlay.gameType':'top_shot_speed_overlay_game_type',
+        'shotSpeedDetails.avgShotSpeed.imperial':'avg_shot_speed',
+        'shotSpeedDetails.avgShotSpeed.metric':'avg_shot_speed_metric',
+        'shotSpeedDetails.avgShotSpeed.percentile':'avg_shot_speed_percentile',
+        'shotSpeedDetails.avgShotSpeed.leagueAvg.imperial':'league_avg_avg_shot_speed',
+        'shotSpeedDetails.avgShotSpeed.leagueAvg.metric':'league_avg_avg_shot_speed_metric',
+        'shotSpeedDetails.shotAttemptsOver100.value':'shot_attempts_over_100',
+        'shotSpeedDetails.shotAttemptsOver100.percentile':'shot_attempts_over_100_percentile',
+        'shotSpeedDetails.shotAttemptsOver100.leagueAvg':'league_avg_shot_attempts_over_100',
+        'shotSpeedDetails.shotAttempts90to100.value':'shot_attempts_90_to_100',
+        'shotSpeedDetails.shotAttempts90to100.percentile':'shot_attempts_90_to_100_percentile',
+        'shotSpeedDetails.shotAttempts90to100.leagueAvg':'league_avg_shot_attempts_90_to_100',
+        'shotSpeedDetails.shotAttempts80to90.value':'shot_attempts_80_to_90',
+        'shotSpeedDetails.shotAttempts80to90.percentile':'shot_attempts_80_to_90_percentile',
+        'shotSpeedDetails.shotAttempts80to90.leagueAvg':'league_avg_shot_attempts_80_to_90',
+        'shotSpeedDetails.shotAttempts70to80.value':'shot_attempts_70_to_80',
+        'shotSpeedDetails.shotAttempts70to80.percentile':'shot_attempts_70_to_80_percentile',
+        'shotSpeedDetails.shotAttempts70to80.leagueAvg':'league_avg_shot_attempts_70_to_80',
+        'shotLocationDetails':'shot_location_details',
+        'shotLocationTotals':'shot_location_totals',
+    },
+    "a3z_pbp":{
+        "Game ID": "game_id",
+        "Period": "period",
+        "Time": "period_time_remaining",
+        "Strength": "strength_state",
+        "Team": "event_team_abbr",
+        "Shooter": "event_player_1_num",
+        "Shot Type": "shot_category",
+        "A1": "shot_assist_player_1_num",
+        "A2": "shot_assist_player_2_num",
+        "A3": "shot_assist_player_3_num",
+        "A1 Zone": "shot_assist_player_1_zone",
+        "A2 Zone": "shot_assist_player_2_zone",
+        "A3 Zone": "shot_assist_player_3_zone",
+        "SC?": "scoring_chance",
+        "SOG?": "is_shot",
+        "Screen?": "screen",
+        "Rush?": "rush_attempt",
+        "Origin": "event_origin",
+        "Context": "event_context",
+        "Oddman?": "oddman",
+        "G?": "is_goal",
+        "Goalie": "event_goalie_num",
+        "Entry Type": "entry_type",
+        "Entry By": "entry_by",
+        "Defended by": "defended_by",
+        "Pass?": "pass",
+        "Lane": "lane",
+        "Dump recovered?": "dump_recovered_by",
+        "Chance?": "chance",
+        "Retrieval": "retrieval_by",
+        "Result": "retrieval_result",
+        "Pressure": "pressured_by",
+        "Exit": "exit_by",
+        "Result.1": "exit_result"
+    },
+    'a3z_simple': {
+        'Game': 'game_title',
+        'Player': 'player_name',
+        'Pos.': 'position',
+        'Team': 'team_abbr',
+        'Year': 'season',
+        '#': 'player_num',
+        '5v5 TOI': '5v5_time_on_ice',
+        'Shots': 'fenwick',
+        'Shots On Goal': 'shots',
+        'Chances': 'scoring_chances',
+        'Passes': 'fenwick_assists',
+        'Primary Shot Assists': 'primary_fenwick_assists',
+        'Secondary Assists': 'secondary_fenwick_assists',
+        'Tertiary Assists': 'tertiary_fenwick_assists',
+        'Chance Assists': 'scoring_chance_assists',
+        'Home Plate': 'home_plate_fenwick_assists',
+        'Low-to-High': 'low_to_high_fenwick_assists',
+        'Behind Net': 'behind_net_fenwick_assists',
+        'Center Lane Assists': 'center_lane_fenwick_assists',
+        'NZ Assist': 'neutral_zone_fenwick_assists',
+        'DZ Assist': 'defensive_zone_fenwick_assists',
+        'Shots off Rush': 'rush_fenwick',
+        'Assists off Rush': 'rush_fenwick_assists',
+        'Shots off Forecheck or Cycle': 'in_zone_fenwick',
+        'Assists off Forecheck': 'forecheck_fenwick_assists',
+        'Shots off Cycle': 'cycle_fenwick',
+        'Assists off Cycle': 'cycle_fenwick_assists',
+        'Shots off HD Passes': 'high_danger_fenwick',
+        'Zone Entries': 'entries',
+        'Carries': 'carry_entries',
+        'Failed Entries': 'failed_entries',
+        'Entries w/ Passing Play': 'pass_entries',
+        'Recoveries': 'puck_recoveries',
+        'Carries w/ Chances': 'carry_entry_chances',
+        'Dump-in Chances': 'dump_in_chances',
+        'Forecheck Pressures': 'forechecking_pressures',
+        'DZ Retrievals': 'retrievals',
+        'Zone Exits': 'exits',
+        'Carried Exits': 'carry_exits',
+        'Passed Exits': 'pass_exits',
+        'Clears': 'clear_exits',
+        'Missed Passes': 'missed_pass_exits',
+        'Retrievals Leading to Exits': 'retrievals_leading_to_exits',
+        'Botched Retrievals': 'botched_retrievals',
+        'Exchanges': 'exchange_exits',
+        'Failed Exit': 'failed_exits',
+        'Targets': 'entries_against',
+        'Denials': 'disrupted_entries',
+        'Passes Allowed': 'pass_entries_against',
+        'Carries Against': 'carry_entries_against',
+        'Carries w/ Chance Against': 'carry_entry_chances_against',
+        'Dump-in w/ Chance Against': 'dump_in_chances_against',
+        'NZ Turnover': 'neutral_zone_giveaways',
+        '5v4 Entries': '5v4_entries',
+        '5v4 Carries': '5v4_carry_entries',
+        '5v4 Setups': '5v4_pass_entries',
+        '4v5 Entries': '4v5_entries',
+        '4v5 Carry Denials': '4v5_disrupted_entries'
+    }
+}
+
+CONVERT_SEASONS = {
+    2007: 20072008, 
+    2008: 20082009, 
+    2009: 20092010, 
+    2010: 20102011, 
+    2011: 20112012, 
+    2012: 20122013, 
+    2013: 20132014, 
+    2014: 20142015, 
+    2015: 20152016, 
+    2016: 20162017, 
+    2017: 20172018, 
+    2018: 20182019, 
+    2019: 20192020, 
+    2020: 20202021, 
+    2021: 20212022, 
+    2022: 20222023, 
+    2023: 20232024, 
+    2024: 20242025,
+    2025: 20252026,
+    2026: 20262027,
+    2027: 20272028,
+    2028: 20282029,
+    2029: 20292030
+}
+
+SEASON_NAMES = {
+    20072008: '2007-08', 
+    20082009: '2008-09',
+    20092010: '2009-10', 
+    20102011: '2010-11',
+    20112012: '2011-12', 
+    20122013: '2012-13',
+    20132014: '2013-14', 
+    20142015: '2014-15',
+    20152016: '2015-16', 
+    20162017: '2016-17',
+    20172018: '2017-18',
+    20182019: '2018-19', 
+    20192020: '2019-20',
+    20202021: '2020-21', 
+    20212022: '2021-22',
+    20222023: '2022-23', 
+    20232024: '2023-24',
+    20242025: '2024-25',
+    20252026: '2025-26',
+    20262027: '2026-27',
+    20272028: '2027-28',
+    20282029: '2028-29',
+    20292030: '2029-30'
+}
+
+CONVERT_TEAM_ABBR = {
+    'L.A':'LAK',
+    'N.J':'NJD',
+    'S.J':'SJS',
+    'T.B':'TBL',
+    'PHX':'ARI'
+}
+
+PER_SIXTY = ['fenwick','expected_goals','goals','primary_assists','secondary_assists','primary_points','points','shots','offensive_zone_faceoffs','neutral_zone_faceoffs','defensive_zone_faceoffs','fenwick_for','fenwick_against','expected_goals_for','expected_goals_against','goals_for','goals_against','shots_for','shots_against','corsi_for','corsi_against','hits_for','hits_against','giveaways','takeaways','penalties','minor_penalties','major_penalties','penalties_drawn','penalty_minutes','blocked_shots','goals_saved_above_expected']
+
+#Some games in the API are specifically known to cause errors in scraping.
+#This list is updated as frequently as necessary
+KNOWN_PROBS = {
+    2007020011:'Missing shifts data for game between Chicago and Minnesota.',
+    2007021178:'Game between the Bruins and Sabres is missing data after the second period, for some reason.',
+    2008020259:'HTML data is completely missing for this game.',
+    2008020409:'HTML data is completely missing for this game.',
+    2008021077:'HTML data is completely missing for this game.',
+    2008030311:'Missing shifts data for game between Pittsburgh and Carolina',
+    2009020081:'HTML pbp for this game between Pittsburgh and Carolina is missing all but the period start and first faceoff events, for some reason.',
+    2009020658:'Missing shifts data for game between New York Islanders and Dallas.',
+    2009020885:'Missing shifts data for game between Sharks and Blue Jackets.',
+    2010020124:'Game between Capitals and Hurricanes is sporadically missing player on-ice data',
+    2012020018:'HTML events contain mislabeled events.',
+    2018021133:'Game between Lightning and Capitals has incorrectly labeled event teams (i.e. WSH TAKEAWAY - #71 CIRELLI (Cirelli is a Tampa Bay skater in this game)).',
+}
+
+SHOT_TYPES = ['wrist','deflected','tip-in','slap','backhand','snap','wrap-around','poke','bat','cradle','between-legs']
+
+EVENTS = ['faceoff','hit','giveaway','takeaway','blocked-shot','missed-shot','shot-on-goal','goal','penalty']
+
+DIR = os.path.dirname(os.path.realpath(__file__))
+SCHEDULE_PATH = os.path.join(DIR,'schedule\\schedule.csv')
+INFO_PATH = os.path.join(DIR,'teaminfo\\nhl_teaminfo.csv')
+DEFAULT_ROSTER = os.path.join(DIR,'rosters\\nhl_rosters.csv')
+
+GS_SCORE_FEATURES = {
+    'skater': [
+        "points",
+        "penalties_drawn_percentage",
+        "puck_management_percentage",
+        "faceoff_percentage",
+        "even_strength_expected_goals_contribution_percentage",
+        "even_strength_expected_goals_for",
+        "even_strength_expected_goals_against",
+        "power_play_expected_goals_contribution_percentage",
+        "power_play_expected_goals_for",
+        "power_play_expected_goals_against",
+        "short_handed_expected_goals_contribution_percentage",
+        "short_handed_expected_goals_for",
+        "short_handed_expected_goals_against"
+    ],
+
+    'goalie': [
+        "expected_goals_for_percentage",
+        "goals_against_per_expected_goals_against"
+    ]
+}
+
+STATS_SORT = {
+    'skater': {
+        'by': ['player_name', 'season', 'team_abbr', 'player_id'],
+        'ascending': True
+    },
+    'goalie': {
+        'by': ['player_name', 'season', 'team_abbr', 'player_id'],
+        'ascending': True
+    },
+    'team': {
+        'by': ['team_abbr', 'season'],
+        'ascending': True
+    },
+    'game_score': {
+        'by': ['game_score', 'player_name', 'season', 'team_abbr', 'player_id'],
+        'ascending': [False, True, True, True, True]
+    },
+    'a3z': {
+        'by': ['player_name', 'season', 'team_abbr', 'player_id'],
+        'ascending': True
+    }
+}
+
+EDGE_CAT = {
+    'skater':[
+        'detail',
+        'skating-distance-detail',
+        'skating-speed-detail',
+        'zone-time',
+        'shot-speed-detail',
+        'shot-location-detail'
+    ],
+    'team':[
+        'detail',
+        'skating-distance-detail',
+        'skating-speed-detail',
+        'zone-time-details',
+        'shot-speed-detail',
+        'shot-location-detail'
+    ],
+    'goalie':[
+        'detail',
+        'shot-location-detail'
+    ]
+}
+
+#Stat columns
+BIO_STAT_COL = [
+    "player_name", "headshot", "position", "handedness", "height_in", "weight_lbs",
+    "birth_date", "birth_country", "nationality", "season_year", "age", "wsba_id"
+]
+
+NON_TOTALS = [
+    'games_played',
+    'per',
+    'percentage',
+    'percentile',
+    'impact',
+    'induction',
+    'game_date',
+    'game_id',
+    'season',
+    'player_id',
+    'index',
+    'overlay'
+]
+
+DRAFT_CAT = {
+    0: 'All Prospects',
+    1: 'North American Skaters',
+    2: 'International Skater',
+    3: 'North American Goalies',
+    4: 'International Goalies'
+}
+
+FENWICK_EVENTS = [
+    'missed-shot',
+    'shot-on-goal',
+    'goal'
+]
+
+DEFAULT_AGG = ['player_id','season','team_abbr','position','season_type','strength_state']
+
+OPS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    ">": operator.gt,
+    ">=": operator.ge,
+    "<": operator.lt,
+    "<=": operator.le,
+    "between": lambda s, a, b: s.between(a, b),
+    "in": lambda s, *v: s.isin(v),
+    "not in": lambda s, *v: ~s.isin(v)
+}
+
+STRENGTHS = ['3v3',
+            '3v4',
+            '3v5',
+            '4v3',
+            '4v4',
+            '4v5',
+            '4v6',
+            '5v3',
+            '5v4',
+            '5v5',
+            '5v6',
+            '6v4',
+            '6v5']
+
+XG_MODEL = os.path.join(DIR,'xg_model\\wsba_xg.json')
+GAME_SCORE = os.path.join(DIR,'game_score\\')
+
+TEST_PATH = os.path.join(DIR,'xg_model\\testing\\xg_model_training_runs.csv')
+CV_PATH = os.path.join(DIR,'xg_model\\testing\\xg_model_cv_runs.csv')
+METRIC_PATH = os.path.join(DIR,'xg_model\\metrics')
+IMG_PATH = os.path.join(DIR,'utils\\wsba.png')
+
+TARGET = "is_goal"
+CONTINUOUS = ['event_distance',
+            'event_angle',
+            'distance_from_last',
+            'angle_from_last',
+            'seconds_since_last',
+            'speed_from_last',
+            'speed_of_angle_from_last'
+            ]
+BOOLEAN = ['wrist',
+        'deflected',
+        'tip-in',
+        'slap',
+        'backhand',
+        'snap',
+        'wrap-around',
+        'poke',
+        'bat',
+        'cradle',
+        'between-legs',
+        'other-shot',
+        'prior_same',
+        'prior_shot-on-goal',
+        'prior_missed-shot',
+        'prior_blocked-shot',
+        'prior_giveaway',
+        'prior_takeaway',
+        'prior_hit',
+        'prior_faceoff',
+        'strength_3v3',
+        'strength_3v4',
+        'strength_3v5',
+        'strength_4v3',
+        'strength_4v4',
+        'strength_4v5',
+        'strength_4v6',
+        'strength_5v3',
+        'strength_5v4',
+        'strength_5v5',
+        'strength_5v6',
+        'strength_6v4',
+        'strength_6v5',
+        'empty_net',
+        'offwing',
+        'rush',
+        'rebound',
+        'short',
+        'failed_bank',
+        'cross_ice'
+    ]
+
+STRENGTH_MATCH = {
+    'even_strength':['5v5','4v4','3v3'],
+    'power_play':['5v4','5v3','4v3'],
+    'short_handed':['4v5','3v5','3v4']
+}
+
+EVENT_MARKERS = {
+    'faceoff':'X',
+    'hit':'P',
+    'blocked-shot':'v',
+    'missed-shot':'o',
+    'shot-on-goal':'D',
+    'goal':'*',
+    'giveaway':'1',
+    'takeaway':'2',
+}
+
+METRIC_LOOKUP = {
+    'xG': 'xG',
+    'Goals': 'is_goal',
+    'Shots': 'is_shot',
+    'Fenwick': 'is_fenwick',
+    'Corsi': 'is_corsi',
+    'Giveaways': 'is_give',
+    'Takeaways': 'is_take'
+}
+
+METRIC_EVENTS = {
+    'xG': FENWICK_EVENTS,
+    'Goals': ['goal'],
+    'Shots': ['shot-on-goal','goal'],
+    'Fenwick': FENWICK_EVENTS,
+    'Corsi': FENWICK_EVENTS+['blocked-shot'],
+    'Giveaways': ['giveaway'],
+    'Takeaways': ['takeaway']
+}
+
+LEGEND_ELEMENTS = [
+    Line2D([0], [0], marker='*', color='blue', label='goal', markersize=8, markeredgecolor='black', linewidth=0.75, linestyle='None'),
+    Line2D([0], [0], marker='D', color='blue', label='shot-on-goal', markersize=8, markeredgecolor='white', linewidth=0.75, linestyle='None'),
+    Line2D([0], [0], marker='o', color='blue', label='missed-shot', markersize=8, markeredgecolor='white', linewidth=0.75, linestyle='None'),
+]
+
+TEAM_IDS = {
+    "AFM": 47,
+    "ANA": 24,
+    "ARI": 53,
+    "ATL": 11,
+    "BOS": 6,
+    "BRK": 51,
+    "BUF": 7,
+    "CAR": 12,
+    "CBJ": 29,
+    "CGS": 56,
+    "CGY": 20,
+    "CHI": 16,
+    "CLE": 49,
+    "CLR": 35,
+    "COL": 21,
+    "DAL": 25,
+    "DCG": 40,
+    "DET": 17,
+    "DFL": 50,
+    "EDM": 22,
+    "FLA": 13,
+    "HAM": 37,
+    "HFD": 34,
+    "KCS": 48,
+    "LAK": 26,
+    "MIN": 30,
+    "MMR": 43,
+    "MNS": 31,
+    "MTL": 8,
+    "MWN": 41,
+    "NHL": 99,
+    "NJD": 1,
+    "NSH": 18,
+    "NYA": 44,
+    "NYI": 2,
+    "NYR": 3,
+    "OAK": 46,
+    "OTT": 9,
+    "PHI": 4,
+    "PHX": 27,
+    "PIR": 38,
+    "PIT": 5,
+    "QBD": 42,
+    "QUA": 39,
+    "QUE": 32,
+    "SEA": 55,
+    "SEN": 36,
+    "SJS": 28,
+    "SLE": 45,
+    "STL": 19,
+    "TAN": 57,
+    "TBD": 70,
+    "TBL": 14,
+    "TOR": 10,
+    "TSP": 58,
+    "UTA": 59,
+    "UTA": 68,
+    "VAN": 23,
+    "VGK": 54,
+    "WIN": 33,
+    "WPG": 52,
+    "WSH": 15,
+}
+
+TEAMS = {
+    1: "NJD",
+    2: "NYI",
+    3: "NYR",
+    4: "PHI",
+    5: "PIT",
+    6: "BOS",
+    7: "BUF",
+    8: "MTL",
+    9: "OTT",
+    10: "TOR",
+    11: "ATL",
+    12: "CAR",
+    13: "FLA",
+    14: "TBL",
+    15: "WSH",
+    16: "CHI",
+    17: "DET",
+    18: "NSH",
+    19: "STL",
+    20: "CGY",
+    21: "COL",
+    22: "EDM",
+    23: "VAN",
+    24: "ANA",
+    25: "DAL",
+    26: "LAK",
+    27: "PHX",
+    28: "SJS",
+    29: "CBJ",
+    30: "MIN",
+    31: "MNS",
+    32: "QUE",
+    33: "WIN",
+    34: "HFD",
+    35: "CLR",
+    36: "SEN",
+    37: "HAM",
+    38: "PIR",
+    39: "QUA",
+    40: "DCG",
+    41: "MWN",
+    42: "QBD",
+    43: "MMR",
+    44: "NYA",
+    45: "SLE",
+    46: "OAK",
+    47: "AFM",
+    48: "KCS",
+    49: "CLE",
+    50: "DFL",
+    51: "BRK",
+    52: "WPG",
+    53: "ARI",
+    54: "VGK",
+    55: "SEA",
+    56: "CGS",
+    57: "TAN",
+    58: "TSP",
+    59: "UTA",
+    68: "UTA",
+    70: "TBD",
+    99: "NHL",
+}
+
+RESULT_NAMES = {
+    'PEX': 'passed-exit',
+    'EXC': 'exchange',
+    'CEX': 'carried-exit',
+    'CLE': 'clear',
+    'MEX': 'missed-pass-exit',
+    'FEX': 'failed-exit',
+    'BOT': 'botched-retrieval'
+}
+
+ENTRY_TYPES = {
+    'c': 'carry-in',
+    'd': 'dump-in',
+    'f': 'failed-entry'
+}
+
+A3Z_TEAM_FIXES = {
+    'UBF': 'BUF',
+    'TT.B': 'TBL',
+    'VA': 'VAN',
+    'VKG': 'VGK',
+    'SEAS': 'SEA',
+    'TB': 'TBL',
+    'TML': 'TOR',
+    'OBS': 'BOS',
+    'AN': 'VAN',
+    'INSH': 'NSH',
+    'BBUF': 'BUF',
+    'TL': 'TBL',
+    'PH': 'PHI',
+    'BU': 'BUF',
+    'PT': 'PIT',
+    'CH': 'CHI',
+    'DA': 'DAL',
+    'CB': 'CBJ',
+    'NCH': 'NSH',
+    'SNH': 'NSH',
+    'TTOR': 'TOR',
+    'BURF': 'BUF'
+}
+
+CONTEXT_FIXES = {
+    'dz exit': 'dz exit',
+    'dz exi': 'dz exit',
+    'dz eixt': 'dz exit',
+    'dz xit': 'dz exit',
+    'dz xi': 'dz exit',
+    'z exit': 'dz exit',
+    ' dz exit': 'dz exit',
+    'dz ext': 'dz exit',
+    'nz regroup': 'nz regroup',
+    'nz rela': 'nz regroup',
+    'nz regrup': 'nz regroup',
+    'nz regruop': 'nz regroup',
+    'nz regrouop': 'nz regroup',
+    'nz regropu': 'nz regroup',
+    'nz turnover': 'nz turnover',
+    'nz turnvoer': 'nz turnover',
+    'nz turnov': 'nz turnover',
+    'nz turnvo': 'nz turnover',
+    'nz turnoveer': 'nz turnover',
+    'nz  turnover': 'nz turnover',
+    'nz tun': 'nz turnover',
+    'nz reload': 'nz reload',
+    'nz reoad': 'nz reload',
+    'nz relaod': 'nz reload',
+    'dz counter': 'dz counter',
+    'nz counter': 'nz counter',
+    'controlled breakout': 'controlled breakout',
+    'controlled breakokut': 'controlled breakout',
+    'controll': 'controlled breakout',
+    'controll-': 'controlled breakout',
+    'oz faceoff': 'oz faceoff',
+    'oz facoeff': 'oz faceoff',
+    'oz faceff': 'oz faceoff',
+    'oz z fa': 'oz faceoff',
+    'oz fae': 'oz faceoff',
+    'ozf': 'oz faceoff',
+    'lead-in': 'lead-in',
+    'sling shot': 'sling shot',
+    'broken play': 'broken play',
+    'scramble': 'scramble',
+    'dz': 'dz_exit',
+    'oops': 'oops',
+    'chip': 'chip',
+    'controle': 'controlled breakout',
+    '2 on 0': 'oddman',
+    '1 on 0': 'oddman',
+    '2 on 1': 'oddman',
+    '3 on 0': 'oddman',
+    '3 on 1': 'oddman',
+    '3 on 2': 'oddman',
+    '4 on 1': 'oddman',
+    '4 on 2': 'oddman',
+    'oz turnover': 'oz turnover',
+    'dz retrieval': 'dz counter',
+    'dz retrieveal': 'dz counter',
+    'dz retreival': 'dz counter',
+    'dz con': 'controlled breakout',
+    'dz clear': 'dz exit',
+    'dz eix': 'dz exit',
+    'dz ext': 'dz exit',
+    'dz exit ': 'dz exit',
+    'dz exiut': 'dz exit',
+    ' dz exit': 'dz exit',
+    'z': None,
+    'dz': 'dz exit',
+    'nz': 'nz exit',
+    'nz regroup': 'nz regroup',
+    'nz regropu': 'nz regroup',
+    'nz regruop': 'nz regroup',
+    'nz relaod': 'nz reload',
+    'nz turnob': 'nz turnover',
+    'nz turnv': 'nz turnover',
+    'nz turnover': 'nz turnover',
+    'nz faceoff': 'nz faceoff',
+    'oz faceoff': 'oz faceoff',
+    'oz fae': 'oz faceoff',
+    'oz facew': 'oz faceoff',
+    ' oz facoff': 'oz faceoff',
+    'oz facoeff': 'oz faceoff',
+    'oz faceff': 'oz faceoff',
+    'oz facewoff': 'oz faceoff',
+    'controlled breakou': 'controlled breakout',
+    'controle': 'controlled breakout',
+    'controlled exit': 'dz exit',
+    'broken play': 'broken play',
+    'broken pL.Ay': 'broken play',
+    'sling shot': 'sling shot',
+    'quick up': 'lead-in',
+    '1 on 0': 'oddman',
+    '2 on 1': 'oddman',
+    'counter': 'nz counter',
+    'second chance': 'lead-in',
+    '5v5': 'lead-in',
+    'oz': 'oz faceoff',
+    'nz counter': 'nz counter',
+    'dz ee': 'dz counter',
+    'oz turnoer': 'oz turnover',
+    'oz turnver': 'oz turnover',
+    'dz  exit': 'dx exit',
+    'oz fas': 'oz faceoff',
+    'dz ei': 'dz exit',
+    'ooz faceoff': 'oz faceoff',
+    'broken pl.ay': 'broken play',
+    'pl.ay': 'broken play',
+    'oz face': 'oz faceoff',
+    'oz facoff': 'oz faceoff',
+
+}
+
+RESULT_FIXES = {
+    'EX': 'EXC',
+    'BOS': 'BOT',
+    'FEXX': 'FEX',
+    'M': 'MEX',
+    'EXCN': 'EXC',
+    'ce': 'CEX',
+    '12N.J': None,
+    'PX': 'PEX',
+    'CEX\\': 'CEX',
+    'PPX': 'PEX',
+    'BOS': 'BOT',
+    'ME': 'MEX',
+    'EPX': 'PEX',
+    'CLEX': 'CLE',
+    'CCLE': 'CLE',
+    'PPEX': 'PEX',
+    'MEXC': 'MEX',
+    'VOT': 'BOT',
+    'N': None,
+    '2PEX': 'PEX',
+    'BOT`': 'BOT',
+    'MES': 'MEX',
+    'MCE': 'MEX',
+    'FEXC':'EXC',
+    'I': None,
+    'CLCE': 'CLE',
+    'LCLE': 'CLE',
+    'FE': 'FEX',
+    'PESX': 'PEX',
+    'MEXX': 'MEX',
+    'PWX': 'PEX',
+    'MEC': 'MEX',
+    'MMEX': 'MEX',
+    'MNEX': 'MEX',
+    'E': 'EXC',
+    'LCE': 'CLE',
+    'JPEX': 'PEX',
+    'FX': 'FEX',
+    'EPX': 'PEX',
+    'PPE': 'PEX',
+    'LFEX': 'FEX',
+    'PEX]': 'PEX',
+    'P3EX': 'PEX',
+    'CEC': 'CEX',
+    'MEXL': 'MEX',
+    'MEEX': 'MEX',
+    'CES': 'CEX',
+    'PX': 'PEX',
+    'REX': 'FEX',
+    'FEE': 'FEX',
+    'FEXX': 'FEX',
+    ']': None,
+    'FESX': 'FEX',
+    'P': 'PEX',
+    'KCLE': 'CLE',
+    'P[EX': 'PEX',
+    'clex': 'CLE',
+    'CE': 'CEX',
+    'MPEX': 'PEX',
+    'CLC': 'CLE',
+    'BO0T': 'BOT',
+    'GBOT': 'BOT',
+    'EXFC': 'EXC',
+    'ECEX': 'CEX',
+    'LCEX': 'CEX',
+    'BO': 'BOT',
+    'MBO': 'BOT',
+    'REV': 'FEX',
+    'CCL': 'CLE',
+    'ICEX': 'CEX',
+    'NPEX': 'PEX',
+    'HEPE': 'PEX',
+    'P3X': 'PEX',
+    'JCLE': 'CLE',
+    'QPEX': 'PEX',
+    'MFEX': 'FEX',
+    'MERX': 'MEX',
+    'CESX': 'CEX',
+    'EFX': 'FEX',
+    'PER': 'PEX',
+    'PERX':'PEX',
+    'LC': 'CLE',
+    'CME': 'CEX',
+    'JPEX': 'PEX',
+    'CLD': 'CLE',
+    'CEL': 'CLE',
+    'FEEX':'FEX',
+    'PEFX': 'PEX',
+    'R': None,
+    5: None,
+    'PES':'PEX',
+    '\\':None,
+    'EMX': 'MEX',
+    'EM': 'MEX',
+    'PE': 'PEX',
+    'NE': 'MEX',
+    'RPEX': 'PEX',
+    'EVX': 'EXC',
+    'ECX': 'EXC',
+    'P;EX': 'PEX',
+    'EBOT': 'BOT',
+    'EXC`': 'EXC',
+    'BOT7': 'BOT',
+    'PEX\'': 'PEX',
+    'CL': 'CLE',
+    'PEE': 'PEX',
+    'CX': 'CEX',
+    'MEW': 'MEX',
+    'PR': 'PEX',
+    'BBOT': 'BOT',
+    'NFEX': 'FEX',
+    'BOG': 'BOT',
+    'EP': 'PEX',
+    'CL3E': 'CLE',
+    'CPE': 'CLE',
+    'C': None,
+    'NCLE': 'CLE',
+    'L': None,
+    'CL3': 'CLE',
+    'CLEW': 'CLE',
+    'PR': 'PEX',
+    'CL': 'CLE',
+    'CLKE': 'CLE',
+    'MFX': 'MEX',
+    'CERX': 'CEX',
+    'FFE': 'FEX',
+    'MEK': 'MEX',
+    'FES': 'FEX',
+    'PEXX': 'PEX',
+    'PEXC': 'PEX',
+    'DAL': None,
+    'XC': 'EXC',
+    'TCLE': 'CLE',
+    'MER': 'MEX',
+    'EXCE': 'EXC',
+    'PEEX': 'PEX',
+    'DXC': 'EXC',
+    'OBT': 'BOT',
+    'BTO': 'BOT',
+    'CLE4': 'CLE',
+    'MX': 'MEX',
+    'M2': None,
+    'MX': 'MEX',
+    'ME\\': 'MEX',
+    'PEZ': 'PEX',
+    'EF': None,
+    'FEFX': 'FEX',
+    'MEE': 'MEX',
+    'FFEX': 'FEX',
+    'CCC': 'CEX',
+    'CEXX': 'CEX',
+    'KCEX': 'CEX',
+    'FEXD': 'FEX',
+    'MER': 'MEX',
+    'PE\\': 'PEX',
+    'PEEX': 'PEX',
+    'DEX': 'FEX'
+}
+
+A3Z_STRENGTH_FIXES = {
+    'v55': '5v5',
+    '5v54': '5v5',
+    'n': None,
+    '5v': '5v5',
+    '5v45': '5v4',
+    '55v5': '5v5',
+    'v4': '5v4',
+    '5c4': '5v4',
+    ''
+    'N': None,
+    '\\': None
+}
+
+LANE_FIXES = {
+    '\\': None,
+    '4': None,
+    'CC': 'C',
+    'VC': 'C',
+    'RN': 'R',
+    'NRR': 'R',
+    'Y': None,
+    'L;': 'L',
+    'J': 'L',
+    'OL': 'L',
+    'D': 'C',
+    'N': 'C',
+    'CL': 'C',
+    '3R': 'R'
+}
+
+DATASET_COL = {
+    'a3z':[
+        'time_on_ice','dump_ins', 'dump_ins_against', 'controlled_entries', 'controlled_entries_against',
+        'controlled_exits', 'carry_exits', 'clear_exits',
+        'carry_entries', 'pass_entries', 'entries', 'carry_entry_chances', 'failed_entries',
+        'carry_entries_against', 'carry_entry_chances_against', 'dump_in_chances', 'dump_in_chances_against', 'pass_entries_against', 'entries_against',
+        'forechecking_pressures', 'disrupted_entries',
+        'exits', 'pass_exits', 'retrievals', 'retrievals_leading_to_exits', 'botched_retrievals',
+        'puck_recoveries','missed_pass_exits', 
+        'neutral_zone_giveaways', 
+        'passes', 'carries',
+        'rush_fenwick_assists'
+    ],
+    
+    'wsba':[
+        'goals','shots','fenwick','corsi','expected_goals',
+        'primary_assists','secondary_assists',
+        'primary_expected_assists','secondary_expected_assists',
+        'primary_fenwick_assists','secondary_fenwick_assists','tertiary_fenwick_assists',
+        'wrist_goals','wrist_shots','wrist_fenwick','wrist_corsi','wrist_expected_goals',
+        'deflected_goals','deflected_shots','deflected_fenwick','deflected_corsi','deflected_expected_goals',
+        'tip_in_goals','tip_in_shots','tip_in_fenwick','tip_in_corsi','tip_in_expected_goals',
+        'slap_goals','slap_shots','slap_fenwick','slap_corsi','slap_expected_goals',
+        'backhand_goals','backhand_shots','backhand_fenwick','backhand_corsi','backhand_expected_goals',
+        'snap_goals','snap_shots','snap_fenwick','snap_corsi','snap_expected_goals',
+        'wrap_around_goals','wrap_around_shots','wrap_around_fenwick','wrap_around_corsi','wrap_around_expected_goals',
+        'primary_points','points', 'expected_goals_for','expected_goals_against',
+        'fenwick_for','fenwick_against','goals_for','goals_against',
+        'shots_for','shots_against','corsi_for','corsi_against',
+        'offensive_zone_faceoffs','neutral_zone_faceoffs','defensive_zone_faceoffs',
+        'goals_saved_above_expected',
+        'time_on_ice','player_name',
+        'headshot','handedness',
+        'height_in','weight_lbs',
+        'birth_date','age','birth_country',
+        'hits_for','giveaways','takeaways',
+        'penalties','minor_penalties','major_penalties',
+        'penalty_minutes','penalty_minutes_drawn',
+        'faceoff_wins','hits_against','penalties_drawn','faceoff_losses','blocked_shots'
+    ],
+    'edge':[
+        'top_shot_speed', 'max_skating_speed',
+        'bursts_over_20', 'total_distance_skated',
+        'bursts_over_22','bursts_18_to_20','bursts_20_to_22',
+        'avg_shot_speed'
+    ]
+}
+
+AGG_POST_METRICS = [
+    ('time_on_ice_per_games_played','time_on_ice','games_played'),
+    ('shooting_percentage','goals','shots'),
+    ('fenwick_shot_percentage','goals','fenwick'),
+    ('expected_assists', 'primary_expected_assists+secondary_expected_assists', None),
+    ('expected_goals_per_fenwick','expected_goals','fenwick'),
+    ('goals_per_expected_goals','goals','expected_goals'),
+    ('primary_assists_per_primary_expected_assists','primary_assists','primary_expected_assists'),
+    ('assists_per_expected_assists','primary_assists+secondary_assists','primary_expected_assists+secondary_expected_assists'),
+    ('assists', 'primary_assists+secondary_assists', None),
+    ('fenwick_assists', 'primary_fenwick_assists+secondary_fenwick_assists', None),
+    ('total_fenwick_assists', 'primary_fenwick_assists+secondary_fenwick_assists+tertiary_fenwick_assists', None),
+    ('primary_expected_assists_per_primary_fenwick_assists', 'primary_expected_assists', 'primary_fenwick_assists'),
+    ('expected_assists_per_fenwick_assists', 'primary_expected_assists+secondary_expected_assists', 'primary_fenwick_assists+secondary_fenwick_assists'),
+    ('goals_contribution_percentage','goals','goals_for'),
+    ('assists_contribution_percentage','primary_assists+secondary_assists','goals_for'),
+    ('goal_involvement_percentage','goals+primary_assists+secondary_assists','goals_for'),
+    ('expected_goal_involvement_percentage','expected_goals+primary_expected_assists+secondary_expected_assists', 'expected_goals_for'),
+    ('fenwick_contribution_percentage','fenwick','fenwick_for'),
+    ('expected_goals_contribution_percentage','expected_goals','expected_goals_for'),
+    ('expected_assists_contribution_percentage','primary_expected_assists+secondary_expected_assists','expected_goals_for'),
+    ('offensive_zone_faceoffs_percentage','offensive_zone_faceoffs','offensive_zone_faceoffs+neutral_zone_faceoffs+defensive_zone_faceoffs'),
+    ('neutral_zone_faceoffs_percentage','neutral_zone_faceoffs','offensive_zone_faceoffs+neutral_zone_faceoffs+defensive_zone_faceoffs'),
+    ('defensive_zone_faceoffs_percentage','defensive_zone_faceoffs','offensive_zone_faceoffs+neutral_zone_faceoffs+defensive_zone_faceoffs'),
+    ('puck_management_percentage','giveaways','giveaways+takeaways'),
+    ('faceoff_percentage', 'faceoff_wins', 'faceoff_wins+faceoff_losses'),
+    ('hits_for_percentage','hits_for','hits_for+hits_against'),
+    ('fenwick_shot_percentage_for','goals_for','fenwick_for'),
+    ('expected_goals_for_per_fenwick_for','expected_goals_for','fenwick_for'),
+    ('goals_for_per_expected_goals_for','goals_for','expected_goals_for'),
+    ('fenwick_shot_percentage_against','goals_against','fenwick_against'),
+    ('expected_goals_against_per_fenwick_against','expected_goals_against','fenwick_against'),
+    ('goals_against_per_expected_goals_against','goals_against','expected_goals_against'),
+    ('goals_for_percentage','goals_for','goals_for+goals_against'),
+    ('shots_for_percentage','shots_for','shots_for+shots_against'),
+    ('expected_goals_for_percentage','expected_goals_for','expected_goals_for+expected_goals_against'),
+    ('fenwick_for_percentage','fenwick_for','fenwick_for+fenwick_against'),
+    ('corsi_for_percentage','corsi_for','corsi_for+corsi_against'),
+    ('goals_saved_above_expected','expected_goals_against-goals_against', None),
+    ('points_percentage', '(regulation_wins+overtime_wins+shootout_wins)*2 + (overtime_losses+shootout_losses)', '(regulation_wins+regulation_losses+overtime_wins+overtime_losses+shootout_wins+shootout_losses)*2'),
+
+    ('passes_per_carry', 'passes', 'carries'),
+    ('pass_exits_percentage', 'pass_exits', 'pass_exits+missed_pass_exits'),
+    ('entries_percentage', 'entries', 'entry_attempts'),
+    ('exits_percentage', 'exits', 'exit_attempts'),
+    ('entries_against_percentage', 'entries_against', 'entry_attempts_against'),
+    ('retrievals_percentage', 'retrievals', 'retrieval_attempts'),
+    ('retrievals_leading_to_zone_exits_percentage', 'retrievals_leading_to_zone_exits', 'retrieval_attempts'),
+    ('controlled_exits_percentage', 'controlled_exits', 'exit_attempts'),
+    ('controlled_entries_percentage', 'controlled_entries', 'entry_attempts'),
+    ('controlled_entries_against_percentage', 'controlled_entries_against', 'entry_attempts_against')
+]
+
+FRONT_COL = ['player_name', 'player_id', 'season', 'team_abbr', 'headshot','position','handedness','height_in','weight_lbs','birth_date','birth_country','nationality','season_year','age','wsba_id']
+
+SPECIAL_KEYS = ['percentage', 'bursts_', 'rapm', 'total_distance_skated', 'max_', 'top_', 'min_', 'bottom_', 'avg_', 'mean_', 'count_', 'std_', 'var_', 'variance_', 'size_', '_per_', 'betweenness', 'pagerank', 'closeness', 'weighted_degree', 'offensive_network_value']
+
+TEAM_NAME_TO_ABBR = {
+    "ANAHEIM DUCKS": "ANA",
+    "ARIZONA COYOTES": "ARI",
+    "ATLANTA THRASHERS": "ATL",
+    "BOSTON BRUINS": "BOS",
+    "BUFFALO SABRES": "BUF",
+    "CAROLINA HURRICANES": "CAR",
+    "COLUMBUS BLUE JACKETS": "CBJ",
+    "CALGARY FLAMES": "CGY",
+    "CHICAGO BLACKHAWKS": "CHI",
+    "COLORADO AVALANCHE": "COL",
+    "DALLAS STARS": "DAL",
+    "DETROIT RED WINGS": "DET",
+    "EDMONTON OILERS": "EDM",
+    "FLORIDA PANTHERS": "FLA",
+    "LOS ANGELES KINGS": "LAK",
+    "MINNESOTA WILD": "MIN",
+    "MONTREAL CANADIENS": "MTL",
+    "MONTRÉAL CANADIENS": "MTL",
+    "CANADIENS MONTREAL": "MTL",
+    "NEW JERSEY DEVILS": "NJD",
+    "NASHVILLE PREDATORS": "NSH",
+    "NEW YORK ISLANDERS": "NYI",
+    "NEW YORK RANGERS": "NYR",
+    "OTTAWA SENATORS": "OTT",
+    "PHILADELPHIA FLYERS": "PHI",
+    "PHOENIX COYOTES": "PHX",
+    "PITTSBURGH PENGUINS": "PIT",
+    "SAN JOSE SHARKS": "SJS",
+    "SEATTLE KRAKEN": "SEA",
+    "ST. LOUIS BLUES": "STL",
+    "TAMPA BAY LIGHTNING": "TBL",
+    "TORONTO MAPLE LEAFS": "TOR",
+    "VANCOUVER CANUCKS": "VAN",
+    "VEGAS GOLDEN KNIGHTS": "VGK",
+    "WINNIPEG JETS": "WPG",
+    "WASHINGTON CAPITALS": "WSH",
+    "BERN SC BERN": "BSB",
+    "KOLN HAIE": "KHI"
+}
+
+NON_FINAL_STATES = ['PRE', 'LIVE', 'CRIT']
+
+POS_BASE_PROB = {
+    'primary': {
+        'C': 0.7,
+        'L': 0.7,
+        'R': 0.7,
+        'D': 0.3
+    },
+    'secondary': {
+        'C': 2/3,
+        'L': 2/3,
+        'R': 2/3,
+        'D': 1/3
+    },
+    'tertiary': {
+        'C': 3/5,
+        'L': 3/5,
+        'R': 3/5,
+        'D': 2/5
+    }
+}
+
+STRENGTH_GROUPS = {
+    'even_strength': ['3v3','4v4','5v5'],
+    'power_play': ['4v3', '5v3', '5v4'],
+    'penalty_kill': ['3v4', '3v5', '4v5']
+}
+
+STRENGTH_MAP = {
+    '3v3': 'even_strength',
+    '3v4': 'penalty_kill',
+    '3v5': 'penalty_kill',
+    '4v3': 'power_play',
+    '4v4': 'even_strength',
+    '4v5': 'penalty_kill',
+    '5v3': 'power_play',
+    '5v4': 'power_play',
+    '5v5': 'even_strength',
+}
+
+STANDINGS_COLS = [
+    'regulation_wins',
+    'regulation_losses',
+    'overtime_wins',
+    'overtime_losses',
+    'shootout_wins',
+    'shootout_losses'
+]
+
+RAPM_STATS = [
+    'corsi',
+    'fenwick',
+    'shots',
+    'goals',
+    'expected_goals'
+]
+
+SKILL_COMPOSITES = {
+    'generation': [
+        'rapm_expected_goals_for_per_sixty',
+        'weighted_degree_per_sixty',
+        'betweenness_per_sixty',
+        'pagerank_per_sixty',
+        'closeness_per_sixty'
+    ],
+    'completion': [
+        'retrievals_percentage',
+        'exits_percentage',
+        'entries_percentage',
+        'entries_against_percentage',
+    ],
+    'transition': [
+        'controlled_entries_per_sixty',
+        'carry_entry_chances_per_sixty',
+        'rush_fenwick_assists_per_sixty',
+    ],
+    'speed': [
+        'bursts_20_to_22_per_sixty',
+        'bursts_over_20_per_sixty'
+    ],
+    'prevention': [
+        'controlled_entries_against_per_sixty',
+        'carry_entries_against_per_sixty',
+        'pass_entries_against_per_sixty',
+        'carry_entry_chances_against_per_sixty',
+    ],
+    'disruption': [
+        'dump_ins_against_per_sixty',
+        'disrupted_entries_per_sixty'
+    ],
+    'pressing': [
+        'dump_ins_per_sixty',
+        'forechecking_pressures_per_sixty'
+    ],
+    'transportation': [
+        'clear_exits_per_sixty',
+        'carry_exits_per_sixty',
+        'retrievals_leading_to_exits_per_sixty',
+        'controlled_exits_per_sixty',
+    ],
+    'physicality': [
+        'hits_for_per_sixty',
+        'hits_against_per_sixty'
+    ],
+    'suppression': [
+        'rapm_expected_goals_against_per_sixty'
+    ],
+    'playmaking': [
+        'primary_assists_per_sixty',
+        'primary_assists_per_primary_expected_assists'
+    ],
+    'goal_scoring': [
+        'goals_per_sixty',
+        'goals_per_expected_goals'
+    ]
+}
+
+SECOND_ORDER = {
+}
+
+def shift_cols(max_periods):
+    return [
+        'season', 'game_id', 'shift_id', 'score_state',
+        *[f'period_{i}' for i in range(1,max_periods+1)],
+        'offense_team_abbr', 'defense_team_abbr',
+        *[f'offense_on_{i}_id' for i in range(1,7)],
+        *[f'defense_on_{i}_id' for i in range(1,7)],
+        'offense_goalie_id', 'defense_goalie_id',
+        *[f'{stat}_for' for stat in RAPM_STATS],
+        *[f'{stat}_for_per_sixty' for stat in RAPM_STATS],
+        'offensive_faceoff', 'neutral_faceoff', 'defensive_faceoff',
+        'lead_1', 'lead_2', 'lead_3_plus',
+        'behind_1', 'behind_2', 'behind_3_plus',
+        'offense_back_to_back', 'defense_back_to_back',
+        'power_play_expiry', 'penalty_kill_expiry',
+        'shift_length', 'is_home'
+    ]
+
+RAPM_MODEL = os.path.join(DIR,'rapm\\wsba_rapm.json')
+
+NETWORK_WEIGHTS = {'primary': 0.7, 'secondary': 0.55, 'tertiary': 0.3}
+
+MEASURES = [
+    'rapm_expected_goals_for_per_sixty',
+    'rapm_expected_goals_against_per_sixty',
+    'fenwick_per_sixty',
+    'primary_fenwick_assists_per_sixty',
+    'goals_per_sixty',
+    'expected_goals_per_sixty',
+    'expected_goals_per_fenwick',
+    'primary_assists_per_sixty',
+    'primary_expected_assists_per_sixty',
+    'primary_expected_assists_per_primary_fenwick_assists',
+    'penalty_minutes_per_sixty',
+    'penalty_minutes_drawn_per_sixty'
+]
+
+COMPONENTS = [
+    'even_strength_offensive_playdriving',
+    'even_strength_defensive_playdriving',
+    'power_play_offensive_playdriving',
+    'penalty_kill_defensive_playdriving',
+    'finishing',
+    'setting',
+    'taken_penalties',
+    'drawn_penalties'
+]
+
+RATINGS = {
+    'offensive_playdriving': [
+        'even_strength_offensive_playdriving',
+        'power_play_offensive_playdriving'
+    ],
+    'defensive_playdriving': [
+        'even_strength_defensive_playdriving',
+        'penalty_kill_defensive_playdriving'
+    ],
+    'talent': [
+        'finishing',
+        'setting'
+    ],
+    'even_strength': [
+        'even_strength_offensive_playdriving',
+        'even_strength_defensive_playdriving'
+    ],
+    'penalties': [
+        'taken_penalties',
+        'drawn_penalties'
+    ],
+    'goals_above_replacement': COMPONENTS
+}
+
+REPLACEMENT_THRESHOLD = {
+    'even_strength': {'F': 13, 'D': 7},
+    'power_play': {'F': 9, 'D': 4},
+    'penalty_kill': {'F': 8 ,'D': 6},
+    'all': {'F': 13, 'D': 7}
+}
+
+## SHARED FUCNCTIONS ##
+# Most of the code originates (entirely or partially) from the hockey_scraper package by Harry Shomer
+
+def get_team(team):
+    #Parse team header in HTML
+    return TEAM_NAME_TO_ABBR.get(team.upper(), team.upper()).upper()
+    
+def convert_to_seconds(minutes):
+    #Convert time formatted as MM:SS in a period to raw seconds
+    if minutes == '-16:0-':
+        return '1200'      #Sometimes in the html at the end of the game the time is -16:0-
+
+    #Validate time (invalid times are generally ignored)
+    try:
+        x = time.strptime(minutes.strip(' '), '%M:%S')
+    except ValueError:
+        return None
+
+    return timedelta(hours=x.tm_hour, minutes=x.tm_min, seconds=x.tm_sec).total_seconds()
+
+def get_contents(game_html):
+    #Parse NHL HTML PBP document
+    parsers = ["html5lib", "lxml", "html.parser"]
+    strainer = SoupStrainer('td', attrs={'class': re.compile(r'bborder')})
+
+    for parser in parsers:
+        # parse_only only works with lxml for some reason
+        if parser == "lxml":
+            soup = BeautifulSoup(game_html, parser, parse_only=strainer)
+        else:
+            soup = BeautifulSoup(game_html, parser)
+
+        tds = soup.find_all("td", {"class": re.compile('.*bborder.*')})
+
+        if len(tds) > 0:
+            break
+
+    return tds
+
+def get_soup(shifts_html):
+    #Convert html document to soup
+    parsers = ["lxml", "html.parser", "html5lib"]
+
+    for parser in parsers:
+        soup = BeautifulSoup(shifts_html, parser)
+        td = soup.findAll(True, {'class': ['playerHeading + border', 'lborder + bborder']})
+
+        if len(td) > 0:
+            break
+
+    return td, get_teams(soup)
+
+def get_teams(soup):
+    #Find and return list of teams a given document's match (for HTML shifts parsing)
+    team = soup.find('td', class_='teamHeading + border')  # Team for shifts
+    team = team.get_text()
+
+    #Find home team
+    teams = soup.find_all('td', {'align': 'center', 'style': 'font-size: 10px;font-weight:bold'})
+    regex = re.compile(r'>(.*)<br/?>')
+    home_team = regex.findall(str(teams[7]))
+
+    return [team, home_team[0]]
+
+GLOBAL_MODULE = 'wsba_hockey.tools.globals'
+
+mod = sys.modules[__name__]
+for name in dir(mod):
+    if not name.startswith("_"):
+        obj = getattr(mod, name)
+        if callable(obj) or not isinstance(obj, type):
+            globals()[name] = obj

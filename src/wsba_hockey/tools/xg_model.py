@@ -3,107 +3,33 @@ import pandas as pd
 import numpy as np
 import xgboost as xgb
 import scipy.sparse as sp
-import wsba_hockey.wsba_main as wsba
-import wsba_hockey.tools.scraping as scraping
 import matplotlib.pyplot as plt
+import wsba_hockey.wsba_main as wsba
+from typing import Literal
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import roc_curve, auc
-from typing import Literal, Union
 
 ### XG_MODEL FUNCTIONS ###
 # Provided in this file are functions vital to the goal prediction model in the WSBA Hockey Python package. #
-
-## GLOBAL VARIABLES ##
-
-target = "is_goal"
-continuous = ['event_distance',
-            'event_angle',
-            'distance_from_last',
-            'angle_from_last',
-            'seconds_since_last',
-            'speed_from_last',
-            'speed_of_angle_from_last'
-            ]
-boolean = ['wrist',
-        'deflected',
-        'tip-in',
-        'slap',
-        'backhand',
-        'snap',
-        'wrap-around',
-        'poke',
-        'bat',
-        'cradle',
-        'between-legs',
-        'other-shot',
-        'prior_same',
-        'prior_shot-on-goal',
-        'prior_missed-shot',
-        'prior_blocked-shot',
-        'prior_giveaway',
-        'prior_takeaway',
-        'prior_hit',
-        'prior_faceoff',
-        'strength_3v3',
-        'strength_3v4',
-        'strength_3v5',
-        'strength_4v3',
-        'strength_4v4',
-        'strength_4v5',
-        'strength_4v6',
-        'strength_5v3',
-        'strength_5v4',
-        'strength_5v5',
-        'strength_5v6',
-        'strength_6v4',
-        'strength_6v5',
-        'empty_net',
-        'offwing',
-        'rush',
-        'rebound'
-    ]
-
-events = ['faceoff','hit','giveaway','takeaway','blocked-shot','missed-shot','shot-on-goal','goal']
-shot_types = ['wrist','deflected','tip-in','slap','backhand','snap','wrap-around','poke','bat','cradle','between-legs']
-fenwick_events = ['missed-shot','shot-on-goal','goal']
-strengths = ['3v3',
-            '3v4',
-            '3v5',
-            '4v3',
-            '4v4',
-            '4v5',
-            '4v6',
-            '5v3',
-            '5v4',
-            '5v5',
-            '5v6',
-            '6v4',
-            '6v5']
-
-dir = os.path.dirname(os.path.realpath(__file__))
-roster_path = os.path.join(dir,'rosters\\nhl_rosters.csv')
-xg_model_path = os.path.join(dir,'xg_model\\wsba_xg.json')
-test_path = os.path.join(dir,'xg_model\\testing\\xg_model_training_runs.csv')
-cv_path = os.path.join(dir,'xg_model\\testing\\xg_model_cv_runs.csv')
-metric_path = os.path.join(dir,'xg_model\\metrics')
 
 def fix_players(pbp):
     #Add/fix player info for shooters and goaltenders
 
     #Find players that don't have a handness
     try:
-        find = pbp.loc[(pbp['event_type'].isin(fenwick_events))&(pbp['event_player_1_hand'].isna()),'event_player_1_id'].drop_duplicates().to_list()
+        find = pbp.loc[(pbp['event_type'].isin(wsba.FENWICK_EVENTS))&(pbp['event_player_1_hand'].isna()),'event_player_1_id'].drop_duplicates().to_list()
     except:
         #If this fails then the column doesn't exist and all players are included in the search
         find = pbp['event_player_1_id'].drop_duplicates().to_list()
     
+    roster = pd.read_csv(wsba.DEFAULT_ROSTER)
+    roster = roster.loc[roster['player_id'].isin(find)].drop_duplicates(['player_id'])[['player_name','player_id','position','handedness']]
+
     #Load roster and locate players
     if not find:
         pass
     else:
         print('Adding player info to pbp...')
-        roster = pd.read_csv(roster_path)
-        roster = roster.loc[roster['player_id'].isin(find)].drop_duplicates(['player_id'])[['player_name','player_id','handedness']]
 
         #Some players are missing from the roster file (generally in newer seasons); add these manually
         miss = pbp.loc[((pbp['event_player_1_id'].isin(find))&(~pbp['event_player_1_id'].isin(roster['player_id']))),'event_player_1_id'].drop_duplicates().dropna().to_list()
@@ -112,81 +38,282 @@ def fix_players(pbp):
             roster = pd.concat([roster,add]).reset_index(drop=True)
 
         #Conversion dict
-        roster['player_id'] = roster['player_id'].astype(str)
-        roster_dict = roster.set_index('player_id').to_dict()['handedness']
+        roster['player_id'] = roster['player_id'].astype('Int64')
+        hand_dict = roster.set_index('player_id').to_dict()['handedness']
 
         #Fix event goalies
         pbp['event_goalie_id'] = np.where(pbp['event_team_venue']=='away',pbp['home_goalie_id'],pbp['away_goalie_id'])
             
         #Add hands
-        pbp['event_player_1_hand'] = pbp['event_player_1_id'].astype(str).str.replace('.0','').replace(roster_dict).replace('nan',None)
-
+        pbp['event_player_1_hand'] = pbp['event_player_1_id'].astype('Int64').map(hand_dict).where(lambda x: x.notna(), None)
+    
     return pbp
 
-def prep_xG_data(data):
+def apply_passing_imputation(pbp):
+    #Apply the imputation scheme to estimate player passing (or setting) impacts on shot attempts
+    #The process is described by Micah Blake McCurdy in his xG model writeup
+    #https://hockeyviz.com/txt/xg7#setterImputation
+
+    goals = pbp['event_type'] == 'goal'
+    non_goals = pbp['event_type'].isin(wsba.FENWICK_EVENTS) & (pbp['event_type'] != 'goal')
+
+    #Iterate through each venue and apply to venue on ice players
+    for venue in ['away', 'home']:
+        team_mask = pbp['event_team_venue'] == venue
+        
+        # Get all on-ice player and position columns at once
+        player_cols = [f'{venue}_on_{j}_id' for j in range(1, 7)]
+        pos_cols = [f'{venue}_on_{j}_pos' for j in range(1, 7)]
+        
+        # Initialize all probability columns at once
+        prob_cols = {
+            'primary': [f'{venue}_on_{j}_primary_fenwick_assist_probability' for j in range(1, 7)],
+            'secondary': [f'{venue}_on_{j}_secondary_fenwick_assist_probability' for j in range(1, 7)],
+            'tertiary': [f'{venue}_on_{j}_tertiary_fenwick_assist_probability' for j in range(1, 7)]
+        }
+        
+        for assist_type in prob_cols:
+            pbp[prob_cols[assist_type]] = 0.0
+        
+        # GOALS: Set known assist probabilities
+        goal_team_mask = team_mask & goals
+        
+        # Vectorized assignment for goals
+        for j in range(1, 7):
+            player_col = f'{venue}_on_{j}_id'
+            is_scorer = pbp[player_col] == pbp['event_player_1_id']
+            is_primary_assist = pbp[player_col] == pbp['event_player_2_id']
+            is_secondary_assist = pbp[player_col] == pbp['event_player_3_id']
+            
+            pbp.loc[goal_team_mask & is_primary_assist, f'{venue}_on_{j}_primary_fenwick_assist_probability'] = 1.0
+            pbp.loc[goal_team_mask & is_secondary_assist, f'{venue}_on_{j}_secondary_fenwick_assist_probability'] = 1.0
+        
+        # GOALS: Compute tertiary assist probabilities
+        if goal_team_mask.any():
+            goal_indices = pbp.index[goal_team_mask]
+            goal_on_ice_ids = pbp.loc[goal_indices, player_cols].values
+            goal_on_ice_pos = pbp.loc[goal_indices, pos_cols].values
+            
+            # Map positions to tertiary probabilities
+            tertiary_probs_goals = np.vectorize(lambda pos: wsba.POS_BASE_PROB['tertiary'].get(pos, 0))(goal_on_ice_pos)
+            
+            # Zero out scorer and assist players
+            goal_player_1 = pbp.loc[goal_indices, 'event_player_1_id'].values[:, None]
+            goal_player_2 = pbp.loc[goal_indices, 'event_player_2_id'].values[:, None]
+            goal_player_3 = pbp.loc[goal_indices, 'event_player_3_id'].values[:, None]
+            
+            involved_mask = (
+                (goal_on_ice_ids == goal_player_1) |
+                (goal_on_ice_ids == goal_player_2) |
+                (goal_on_ice_ids == goal_player_3)
+            )
+            tertiary_probs_goals[involved_mask] = 0
+            
+            # Normalize
+            tertiary_sums = tertiary_probs_goals.sum(axis=1, keepdims=True)
+            tertiary_sums[tertiary_sums == 0] = 1
+            tertiary_probs_goals = (tertiary_probs_goals / tertiary_sums) * 0.8
+            
+            # Assign back
+            pbp.loc[goal_indices, prob_cols['tertiary']] = tertiary_probs_goals
+        
+        # NON-GOALS: Compute all assist probabilities
+        if non_goals.any():
+            non_goal_team_mask = team_mask & non_goals
+            non_goal_indices = pbp.index[non_goal_team_mask]
+            
+            on_ice_ids = pbp.loc[non_goal_indices, player_cols].values
+            on_ice_pos = pbp.loc[non_goal_indices, pos_cols].values
+            shooter_ids = pbp.loc[non_goal_indices, 'event_player_1_id'].values[:, None]
+            
+            # Map positions to probabilities for all assist types
+            probs = {}
+            for assist_type in ['primary', 'secondary', 'tertiary']:
+                probs[assist_type] = np.vectorize(lambda pos: wsba.POS_BASE_PROB[assist_type].get(pos, 0))(on_ice_pos)
+                # Zero out shooter
+                probs[assist_type][on_ice_ids == shooter_ids] = 0
+                # Normalize
+                sums = probs[assist_type].sum(axis=1, keepdims=True)
+                sums[sums == 0] = 1
+                probs[assist_type] = (probs[assist_type] / sums) * 0.8
+            
+            # Assign all probabilities at once
+            for assist_type in ['primary', 'secondary', 'tertiary']:
+                pbp.loc[non_goal_indices, prob_cols[assist_type]] = probs[assist_type]
+    
+    return pbp
+
+def apply_time_on_ice(pbp):
+    #Apply time on ice (in shift) for all on-ice skaters and first event player (shooter)
+
+    #Collect on ice columns
+    home_cols = [f'home_on_{i}_id' for i in range(1, 7)]
+    away_cols = [f'away_on_{i}_id' for i in range(1, 7)]
+    on_ice_cols = home_cols + away_cols
+
+    #Flatten on ice player columns
+    players = pd.unique(pbp[on_ice_cols].values.ravel())
+    players = players[~pd.isna(players)]
+
+    is_change = pbp['event_type'] == 'change'
+    ids_on  = pbp['ids_on'].fillna('').astype(str)
+    ids_off = pbp['ids_off'].fillna('').astype(str)
+    event_time = pbp['event_length'].fillna(0)
+
+    #Create DataFrame to hold TOI
+    toi_in_shift = pd.DataFrame(index=pbp.index, columns=players)
+
+    for pid in players:
+        toi = 0.0
+        on_shift = False
+        toi_col = []
+
+        for i in range(len(pbp)):
+            # Check if player is currently on ice for this event
+            player_on_ice = False
+            for col in on_ice_cols:
+                if pbp[col].iat[i] == pid:
+                    player_on_ice = True
+                    break
+            
+            # Handle shift changes
+            if is_change.iat[i]:
+                # Player going OFF - end their shift
+                if pid in ids_off.iat[i].split(';'):
+                    on_shift = False
+                    toi = 0.0
+                # Player coming ON - start their shift
+                elif pid in ids_on.iat[i].split(';'):
+                    on_shift = True
+                    toi = 0.0
+            else:
+                # For non-change events, sync on_shift status with on-ice status
+                # If player appears on ice but wasn't marked on_shift, start their shift
+                if player_on_ice and not on_shift:
+                    on_shift = True
+                    toi = 0.0
+                # If player is marked on_shift but not on ice, end their shift
+                elif not player_on_ice and on_shift:
+                    on_shift = False
+                    toi = 0.0
+
+            # Record TOI for this event (after determining shift status)
+            if on_shift:
+                toi += event_time.iat[i]
+            
+            toi_col.append(toi if on_shift else 0.0)
+
+        toi_in_shift[pid] = toi_col
+
+    #Attach on-ice TOI to on-ice columns
+    for col in on_ice_cols:
+        out = col.replace('_id', '_shift_time_on_ice')
+        pbp[out] = np.nan
+
+        pid_vals = pbp[col].values
+        mask = ~pd.isna(pid_vals)
+        pbp.loc[mask, out] = [
+            toi_in_shift.at[i, pid] if pid in toi_in_shift.columns else np.nan
+            for i, pid in zip(pbp.index[mask], pid_vals[mask])
+        ]
+
+    #Shooter
+    shooter_col = 'event_player_1_shift_time_on_ice'
+    pbp[shooter_col] = np.nan
+    mask = pbp['event_player_1_id'].notna()
+    pbp.loc[mask, shooter_col] = [
+        toi_in_shift.at[i, pid] if pid in toi_in_shift.columns else np.nan
+        for i, pid in zip(pbp.index[mask], pbp.loc[mask, 'event_player_1_id'])
+    ]
+
+    #Opponent TOI
+    for i in range(1, 7):
+        pbp[f'event_on_ice_against_{i}_shift_time_on_ice'] = np.where(
+            pbp['event_team_venue'] == 'away',
+            pbp[f'home_on_{i}_shift_time_on_ice'],
+            pbp[f'away_on_{i}_shift_time_on_ice']
+        )
+
+    return pbp
+        
+def prep_xG_data(pbp):
     #Prep data for xG training and calculation
-    data = fix_players(data)
+    pbp = fix_players(pbp)
 
     #Informal groupby
-    data.sort_values(by=['season','game_id','period','seconds_elapsed','event_num'],inplace=True)
+    pbp = pbp.sort_values(by=['season','game_id','period','seconds_elapsed','event_num'])
 
     #Recalibrate times series data with current data
-    data['seconds_since_last'] = data['seconds_elapsed'] - data['seconds_elapsed'].shift(1) 
+    pbp['seconds_since_last'] = pbp['seconds_elapsed'] - pbp['seconds_elapsed'].shift(1) 
     #Prevent leaking between games by setting value to zero when no time has occured in game
-    data["seconds_since_last"] = np.where(data['seconds_elapsed']==0,0,data['seconds_since_last'])
+    pbp["seconds_since_last"] = np.where(pbp['seconds_elapsed']==0,0,pbp['seconds_since_last'])
 
     #Create last event columns
-    data["event_team_last"] = data['event_team_abbr'].shift(1)
-    data["event_type_last"] = data['event_type'].shift(1)
-    data["x_adj_last"] = data['x_adj'].shift(1)
-    data["y_adj_last"] = data['y_adj'].shift(1)
-    data["zone_code_last"] = data['zone_code'].shift(1)
+    pbp["event_team_last"] = pbp['event_team_abbr'].shift(1)
+    pbp["event_type_last"] = pbp['event_type'].shift(1)
+    pbp["x_adj_last"] = pbp['x_adj'].shift(1)
+    pbp["y_adj_last"] = pbp['y_adj'].shift(1)
+    pbp["zone_code_last"] = pbp['zone_code'].shift(1)
 
-    data.sort_values(['season','game_id','period','seconds_elapsed','event_num'],inplace=True)    
+    pbp = pbp.sort_values(['season','game_id','period','seconds_elapsed','event_num'])    
 
     #Contextual Data (for score state minimize the capture to four goals)
-    data['score_state'] = np.where(data['away_team_abbr']==data['event_team_abbr'],data['away_score']-data['home_score'],data['home_score']-data['away_score'])
-    data['score_state'] = np.where(data['score_state']>4,4,data['score_state'])
-    data['score_state'] = np.where(data['score_state']<-4,-4,data['score_state'])
+    pbp['score_state'] = np.where(pbp['away_team_abbr']==pbp['event_team_abbr'],pbp['away_score']-pbp['home_score'],pbp['home_score']-pbp['away_score'])
+    pbp['score_state'] = np.where(pbp['score_state']>4,4,pbp['score_state'])
+    pbp['score_state'] = np.where(pbp['score_state']<-4,-4,pbp['score_state'])
 
-    data['strength_diff'] = np.where(data['away_team_abbr']==data['event_team_abbr'],data['away_skaters']-data['home_skaters'],data['home_skaters']-data['away_skaters'])
-    data['strength_state_venue'] = data['away_skaters'].astype(str)+'v'+data['home_skaters'].astype(str)
-    data['distance_from_last'] = np.sqrt((data['x_adj'] - data['x_adj_last'])**2 + (data['y_adj'] - data['y_adj_last'])**2)
-    data['angle_from_last'] = np.degrees(np.arctan2(abs(data['y_adj'] - data['y_adj_last']), abs(89 - (data['x_adj']-data['x_adj_last']))))
+    pbp['strength_diff'] = np.where(pbp['away_team_abbr']==pbp['event_team_abbr'],pbp['away_skaters']-pbp['home_skaters'],pbp['home_skaters']-pbp['away_skaters'])
+    pbp['strength_state_venue'] = pbp['away_skaters'].astype(str)+'v'+pbp['home_skaters'].astype(str)
+    pbp['distance_from_last'] = np.sqrt((pbp['x_adj'] - pbp['x_adj_last'])**2 + (pbp['y_adj'] - pbp['y_adj_last'])**2)
+    pbp['angle_from_last'] = np.degrees(np.arctan2(abs(pbp['y_adj'] - pbp['y_adj_last']), abs(89 - (pbp['x_adj']-pbp['x_adj_last']))))
 
     #Event speeds
-    data['speed_from_last'] = np.where(data['seconds_since_last']==0,0,data['distance_from_last']/data['seconds_since_last'])
-    data['speed_of_angle_from_last'] = np.where(data['seconds_since_last']==0,0,data['angle_from_last']/data['seconds_since_last'])
+    pbp['speed_from_last'] = np.where(pbp['seconds_since_last']==0,0,pbp['distance_from_last']/pbp['seconds_since_last'])
+    pbp['speed_of_angle_from_last'] = np.where(pbp['seconds_since_last']==0,0,pbp['angle_from_last']/pbp['seconds_since_last'])
 
-    #Rush and rebounds are labelled
-    data['rush'] = np.where((data['event_type'].isin(fenwick_events))&(data['zone_code_last'].isin(['N','D']))&(data['x_adj']>25)&(data['seconds_since_last']<=5),1,0)
-    data['rebound'] = np.where((data['event_type'].isin(fenwick_events))&(data['event_type_last'].isin(fenwick_events))&(data['seconds_since_last']<=2),1,0)
+    #Rush, in-zone, and rebound shots are labelled
+    pbp['rush'] = np.where((pbp['event_type'].isin(wsba.FENWICK_EVENTS))&(pbp['zone_code_last'].isin(['N','D']))&(pbp['zone_code']=='O')&(pbp['seconds_since_last']<=5),1,0)
+    pbp['in_zone'] = np.where((pbp['event_type'].isin(wsba.FENWICK_EVENTS))&(pbp['zone_code_last']=='O')&(pbp['zone_code']=='O')&(pbp['seconds_since_last']<=5),1,0)
+    pbp['rebound'] = np.where((pbp['event_type'].isin(wsba.FENWICK_EVENTS))&(pbp['event_type_last'].isin(wsba.FENWICK_EVENTS))&(pbp['seconds_since_last']<=2),1,0)
 
     #Create boolean variables
-    data["is_goal"]=(data['event_type']=='goal').astype(int)
-    data["is_home"]=(data['home_team_abbr']==data['event_team_abbr']).astype(int)
+    pbp["is_goal"]=(pbp['event_type']=='goal').astype(int)
+    pbp["is_home"]=(pbp['home_team_abbr']==pbp['event_team_abbr']).astype(int)
 
     #Boolean variables for shot types and prior events
-    for shot in shot_types:
-        data[shot] = (data['shot_type']==shot).astype(int)
-    for event in events[:-1]:
-        data[f'prior_{event}'] = (data['event_type_last']==event).astype(int)
-    
-    data['other-shot'] = (~data['shot_type'].isin(shot_types)).astype(int)
-    data['prior_same'] = (data['event_team_last']==data['event_team_abbr']).astype(int)
+    for shot in wsba.SHOT_TYPES:
+        pbp[shot] = (pbp['shot_type']==shot).astype(int)
+    for event in wsba.EVENTS[:-1]:
+        pbp[f'prior_{event}'] = (pbp['event_type_last']==event).astype(int)
+
+    pbp['other-shot'] = (~pbp['shot_type'].isin(wsba.SHOT_TYPES)).astype(int)
+    pbp['prior_same'] = (pbp['event_team_last']==pbp['event_team_abbr']).astype(int)
     
     #Strength boolean (used instead of 'strength_diff' in order to more usefully distinguish between strength states)
-    for strength in strengths:
-        data[f'strength_{strength}'] = (data['strength_state']==strength).astype(int)
+    for strength in wsba.STRENGTHS:
+        pbp[f'strength_{strength}'] = (pbp['strength_state']==strength).astype(int)
+    
+    #Flag special shot attempts added after 2021
+    pbp['short'] = (pbp['event_reason']=='short').astype(int)
+    pbp['failed_bank'] = (pbp['event_reason']=='failed-bank-attempt').astype(int)
+
+    #Determine if the current play occured on the opposite side of the ice from the previous event
+    pbp['cross_ice'] = (pbp['y_adj_last'] * pbp['y_adj'] < 0).astype(int)
 
     #Misc variables
-    data['empty_net'] = np.where((data['event_type'].isin(fenwick_events))&(data['event_goalie_id'].isna()),1,0)
-    data['offwing'] = np.where(((data['y_adj']<0)&(data['event_player_1_hand']=='L'))|((data['y_adj']>=0)&(data['event_player_1_hand']=='R')),1,0)
+    pbp['empty_net'] = np.where((pbp['event_type'].isin(wsba.FENWICK_EVENTS))&(pbp['event_goalie_id'].isna()),1,0)
+    pbp['offwing'] = np.where(((pbp['y_adj']<0)&(pbp['event_player_1_hand']=='L'))|((pbp['y_adj']>=0)&(pbp['event_player_1_hand']=='R')),1,0)
     
-    #Return: pbp data prepared to train and calculate the xG model
-    return data
+    #Add shot assist probabilities
+    pbp = apply_passing_imputation(pbp)
 
-def wsba_xG(pbp, model_type: Literal['bayesian', 'frequentist'] = 'frequentist', states = False, hypertune = False, train = False, test_path = test_path, cv_path = cv_path, model_path = xg_model_path, train_runs = 20, cv_runs = 20):
+    #Add on-ice player time on ice
+    #pbp = apply_time_on_ice(pbp)
+
+    #Return: pbp data prepared to train and calculate the xG model
+    return pbp
+
+def wsba_xG(pbp, model_type: Literal['bayesian', 'frequentist'] = 'frequentist', states = False, hypertune = False, train = False, test_path = wsba.TEST_PATH, cv_path = wsba.CV_PATH, model_path = wsba.XG_MODEL, train_runs = 20, cv_runs = 20):
     #Train and calculate the WSBA Expected Goals model
     
     #Add index for future merging
@@ -196,7 +323,7 @@ def wsba_xG(pbp, model_type: Literal['bayesian', 'frequentist'] = 'frequentist',
     pbp['xG'] = 0.0
 
     #Recalibrate coordinates
-    pbp = scraping.adjust_coords(pbp)
+    pbp = wsba.adjust_coords(pbp)
 
     #Recalculate stat states if speciifed
     if states:
@@ -214,8 +341,8 @@ def wsba_xG(pbp, model_type: Literal['bayesian', 'frequentist'] = 'frequentist',
                                     pbp['strength_state'])
 
     #Prep data and filter shot events
-    data = prep_xG_data(pbp.loc[(pbp['event_type'].isin(events))&(pbp['strength_state'].isin(strengths))&(pbp['x'].notna())&(pbp['y'].notna())])
-    data = data.loc[data['event_type'].isin(fenwick_events)]
+    data = prep_xG_data(pbp.loc[(pbp['event_type'].isin(wsba.EVENTS))&(pbp['strength_state'].isin(wsba.STRENGTHS))&(pbp['x'].notna())&(pbp['y'].notna())])
+    data = data.loc[data['event_type'].isin(wsba.FENWICK_EVENTS)]
     
     if model_type == 'bayesian':
         NotImplementedError('PyMC Model in Development...')
@@ -236,12 +363,12 @@ def wsba_xG(pbp, model_type: Literal['bayesian', 'frequentist'] = 'frequentist',
                 model_path = model_path
 
             #Convert to sparse
-            data_sparse = sp.csr_matrix(training[[target]+continuous+boolean])
-            is_goal_vect = data_sparse[:,0].A
+            data_sparse = sp.csr_matrix(training[[wsba.TARGET]+wsba.CONTINUOUS+wsba.BOOLEAN])
+            is_goal_vect = data_sparse[:,0].toarray()
             predictors = data_sparse[:,1:]
 
             #XGB DataModel
-            xgb_matrix = xgb.DMatrix(data=predictors,label=is_goal_vect,feature_names=(continuous+boolean))
+            xgb_matrix = xgb.DMatrix(data=predictors,label=is_goal_vect,feature_names=(wsba.CONTINUOUS+wsba.BOOLEAN))
 
             if train:
                 print('### XGBOOST MODEL TRAINING ###')
@@ -396,15 +523,16 @@ def wsba_xG(pbp, model_type: Literal['bayesian', 'frequentist'] = 'frequentist',
             for col in xg_data.columns:
                 if col not in pbp.columns:
                     pbp[col] = np.nan
+                    pbp[col] = pbp[col].astype('object')
 
             pbp.loc[xg_data.index, xg_data.columns] = xg_data
 
             #Return: PBP dataframe with xG columns
-            pbp_xg = pbp.sort_values(by=['event_index','season','game_id','period','seconds_elapsed','event_num'])
+            pbp_xg = pbp.sort_values(by=['game_id','period','seconds_elapsed','event_num'])
 
             return pbp_xg
 
-def feature_importance(model_path = xg_model_path):
+def feature_importance(model_path = wsba.XG_MODEL, metric_path = wsba.METRIC_PATH):
     print('Feature importance for WSBA xG Model...')
     
     for en in [False, True]:
@@ -423,11 +551,11 @@ def feature_importance(model_path = xg_model_path):
 
         plt.savefig(os.path.join(metric_path,f'feature_importance{'_en' if en else ''}.png'),bbox_inches='tight')
 
-def roc_auc_curve(pbp):
+def roc_auc_curve(pbp, metric_path = wsba.METRIC_PATH):
     print('ROC-AUC Curve for WSBA xG Model...')
 
     if 'xG' in pbp.columns:
-        data = pbp.loc[(pbp['event_type'].isin(fenwick_events))&(pbp['strength_state'].isin(strengths))&(pbp['x'].notna())&(pbp['y'].notna())]
+        data = pbp.loc[(pbp['event_type'].isin(wsba.FENWICK_EVENTS))&(pbp['strength_state'].isin(wsba.STRENGTHS))&(pbp['x'].notna())&(pbp['y'].notna())]
           
         fpr, tpr, _ = roc_curve(data['is_goal'], data['xG'])
         roc_auc = auc(fpr,tpr)
@@ -443,21 +571,21 @@ def roc_auc_curve(pbp):
     else:
         print('No xG found for provided play-by-play data.  Apply xG model to the play-by-play data first.')
 
-def reliability(pbp):
+def calibration(pbp, metric_path = wsba.METRIC_PATH):
     print('Reliability for WSBA xG Model...')
 
     if 'xG' in pbp.columns: 
-        data = pbp.loc[(pbp['event_type'].isin(fenwick_events))&(pbp['strength_state'].isin(strengths))&(pbp['x'].notna())&(pbp['y'].notna())]
+        data = pbp.loc[(pbp['event_type'].isin(wsba.FENWICK_EVENTS))&(pbp['strength_state'].isin(wsba.STRENGTHS))&(pbp['x'].notna())&(pbp['y'].notna())]
         fop, mpv = calibration_curve(data['is_goal'], data['xG'], strategy='uniform')
 
         plt.figure()
         plt.plot(mpv, fop, "s-", label="Model")
         plt.plot([0, 1], [0, 1], linestyle="--", label="Perfect calibration")
-        plt.title(f"WSBA xG Reliability")
+        plt.title(f"WSBA xG Calibration")
         plt.xlabel("Predicted Probability (mean)")
         plt.ylabel("Fraction of positives")
         plt.legend(loc="best")
-        plt.savefig(os.path.join(metric_path, f'reliability.png'), bbox_inches='tight')
+        plt.savefig(os.path.join(metric_path, f'calibration.png'), bbox_inches='tight')
 
     else:
         print('No xG found for provided play-by-play data.  Apply xG model to the play-by-play data first.')

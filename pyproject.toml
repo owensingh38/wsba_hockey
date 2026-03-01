@@ -1,10 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "wsba_hockey"
-version = "1.4.1"
+version = "1.5.0"
 authors = [
   { name="Owen Singh", email="owenbksingh@gmail.com" },
 ]
 description = "WeakSide Breakout's complete Python package of access to hockey data, primairly including the scraping of National Hockey League schedule, play-by-play, and shifts information."
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "requests>=2.31",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "xgboost>=1.7",
+    "beautifulsoup4>=4.12",
+    "hockey-rink>=1.1",
+    "networkx>=3.0"
+]
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [

@@ -92,13 +92,3 @@ wsba.repo_load_schedule(seasons=[20212022,20222023,20232024,20242025])
 
 ## DOCUMENTATION
 View full documentation here: [WSBA Hockey Package Documentation](https://weakside-breakout-analysis.github.io/wsba_hockey/)
-
-## ACKNOWLEDGEMENTS AND CREDITS 
-### Huge thanks to the following:
-Harry Shomer - Creator of the hockey_scraper package, which contains select utils functions within this package and otherwise inspires the creation of this package.
-
-Dan Morse - Creator of the hockeyR package; another important inspiration and model for developing an NHL scraper.
-
-Patrick Bacon - Creator of TopDownHockey package
-
-Anyone in the NHL Public Analytics community who has stuck around and supported WeakSide Breakout Analysis hockey.
