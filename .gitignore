@@ -1,6 +1,9 @@
 __pycache__
 src/wsba_hockey/__pycache__
 src/wsba_hockey/tools/__pycache__
+dist/
+build/
+*.egg-info/
 .vscode/
 make.bat
 Makefile

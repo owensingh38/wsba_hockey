@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import wsba_hockey.wsba_main as wsba
 from pathlib import Path
+from functools import lru_cache
 from matplotlib.colors import LinearSegmentedColormap
 from hockey_rink import NHLRink, CircularImage
 from scipy.ndimage import gaussian_filter
@@ -78,6 +79,37 @@ class WSBAPlot:
         self.ax.set_axis_off()
         self.ax.set_xlim(self.rink_ax.get_xlim())
         self.ax.set_ylim(self.rink_ax.get_ylim())
+
+
+@lru_cache(maxsize=4)
+def load_teaminfo(info_path: str = INFO_PATH) -> pd.DataFrame:
+    return pd.read_csv(info_path)
+
+
+def team_primary_color_map(teaminfo: pd.DataFrame | None = None, *, info_path: str = INFO_PATH) -> dict[str, str]:
+    teaminfo = load_teaminfo(info_path) if teaminfo is None else teaminfo
+    if teaminfo is None or teaminfo.empty:
+        return {}
+    return dict(zip(teaminfo["wsba_id"].astype(str), teaminfo["primary_color"].astype(str)))
+
+
+def apply_primary_colors(
+    df: pd.DataFrame,
+    color_map: dict[str, str],
+    *,
+    team_abbr_col: str = "event_team_abbr",
+    season_col: str = "season",
+    out_col: str = "color",
+    fallback: str = "#1f77b4",
+) -> pd.DataFrame:
+    if team_abbr_col not in df.columns or season_col not in df.columns:
+        df[out_col] = fallback
+        return df
+
+    seasons = pd.to_numeric(df[season_col], errors="coerce").astype("Int64").astype(str)
+    wsba_ids = df[team_abbr_col].astype(str).str.upper() + seasons
+    df[out_col] = wsba_ids.map(color_map).fillna(fallback)
+    return df
 
 
 def plot_events(

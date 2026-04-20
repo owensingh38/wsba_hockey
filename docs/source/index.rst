@@ -5,9 +5,5 @@ WSBA Hockey is a Python package for scraping and analyzing hockey data (primaril
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents
 
-   quickstart
-   scraping
-   plotting
-   api
+   api/modules

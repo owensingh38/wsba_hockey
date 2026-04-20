@@ -35,7 +35,7 @@ wsba.nhl_scrape_standings()
 
 ```python
 wsba.nhl_scrape_roster(20242025)
-nhl_scrape_player_info([8477956, 8479987])
+wsba.nhl_scrape_player_info([8477956, 8479987])
 wsba.nhl_scrape_team_info()
 ```
 
@@ -71,28 +71,21 @@ wsba.nhl_calculate_stats(pbp,'skater',['5v5','4v4','3v3'], 'all',shot_impact = T
 ```python
 pbp = wsba.nhl_scrape_season(20212022, remove=[], local=True)
 
-# Unified event plotting (skater / goalie / team / coach / game)
-wsba.nhl_plot_events(
+plots = wsba.nhl_plot_events(
     pbp,
-    group="skater",
-    entities=[8470638],  # NHL API player_id
-    season=20212022,
-    events=["goal", "shot-on-goal", "missed-shot"],
+    group="game",
+    entities=[2021020001],
+    events=["goal", "shot-on-goal", "missed-shot", "blocked-shot"],
     strengths=["5v5"],
-    season_types=[2, 3],
+    season_types=2,
     legend=True,
+    rotation=0,
+    display_range="full",
 )
-
-# Heatmaps (player_ids only)
-wsba.nhl_plot_heatmap(
-    pbp,
-    player_ids=[8470638],
-    season=20212022,
-    strengths=["5v5"],
-    season_types=[2, 3],
-    compare=False,
-)
+plots[2021020001].savefig("skater_events.png", bbox_inches="tight")
 ```
+#### Sample Plot:
+
 
 ## REPOSITORY 
 ### Team Information
@@ -100,6 +93,7 @@ wsba.nhl_plot_heatmap(
 wsba.repo_load_teaminfo()
 wsba.repo_load_rosters(seasons=[20212022,20222023,20232024,20242025])
 ```
+
 ### Schedule
 ```python
 wsba.repo_load_schedule(seasons=[20212022,20222023,20232024,20242025])

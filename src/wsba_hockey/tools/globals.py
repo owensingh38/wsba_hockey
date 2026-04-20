@@ -718,7 +718,7 @@ CONVERT_TEAM_ABBR = {
     'PHX':'ARI'
 }
 
-PER_SIXTY = ['fenwick','expected_goals','goals','primary_assists','secondary_assists','primary_points','points','shots','offensive_zone_faceoffs','neutral_zone_faceoffs','defensive_zone_faceoffs','fenwick_for','fenwick_against','expected_goals_for','expected_goals_against','goals_for','goals_against','shots_for','shots_against','corsi_for','corsi_against','hits_for','hits_against','giveaways','takeaways','penalties','minor_penalties','major_penalties','penalties_drawn','penalty_minutes','blocked_shots','goals_saved_above_expected']
+PER_SIXTY = ['fenwick','expected_goals','goals','primary_assists','secondary_assists','primary_points','points','shots','offensive_zone_faceoffs','neutral_zone_faceoffs','defensive_zone_faceoffs','fenwick_for','fenwick_against','expected_goals_for','expected_goals_against','goals_for','goals_against','shots_for','shots_against','corsi_for','corsi_against','hits_applied','hits_received','hits_for','hits_against','giveaways','takeaways','penalties_taken','minor_penalties_taken','major_penalties_taken','fighting_penalties_taken','penalty_minutes_taken','penalties_drawn','minor_penalties_drawn','major_penalties_drawn','fighting_penalties_drawn','penalty_minutes_drawn','penalties_for','minor_penalties_for','major_penalties_for','fighting_penalties_for','penalty_minutes_for','penalties_against','minor_penalties_against','major_penalties_against','fighting_penalties_against','penalty_minutes_against','blocked_shots','goals_saved_above_expected']
 
 #Some games in the API are specifically known to cause errors in scraping.
 #This list is updated as frequently as necessary
@@ -1493,10 +1493,12 @@ DATASET_COL = {
         'headshot','handedness',
         'height_in','weight_lbs',
         'birth_date','age','birth_country',
-        'hits_for','giveaways','takeaways',
-        'penalties','minor_penalties','major_penalties','fighting_penalties','penalty_minutes',
+        'hits_applied','hits_for','giveaways','takeaways',
+        'penalties_taken','minor_penalties_taken','major_penalties_taken','fighting_penalties_taken','penalty_minutes_taken',
+        'penalties_for','minor_penalties_for','major_penalties_for','fighting_penalties_for','penalty_minutes_for',
         'penalties_drawn','minor_penalties_drawn','major_penalties_drawn','fighting_penalties_drawn','penalty_minutes_drawn',
-        'faceoff_wins','hits_against','faceoff_losses','blocked_shots',
+        'penalties_against','minor_penalties_against','major_penalties_against','fighting_penalties_against','penalty_minutes_against',
+        'faceoff_wins','hits_received','hits_against','faceoff_losses','blocked_shots',
         'standings_points'
     ],
     'edge':[
@@ -1533,6 +1535,7 @@ AGG_POST_METRICS = [
     ('defensive_zone_faceoffs_percentage','defensive_zone_faceoffs','offensive_zone_faceoffs+neutral_zone_faceoffs+defensive_zone_faceoffs'),
     ('puck_management_percentage','giveaways','giveaways+takeaways'),
     ('faceoff_percentage', 'faceoff_wins', 'faceoff_wins+faceoff_losses'),
+    ('hits_applied_percentage','hits_applied','hits_applied+hits_received'),
     ('hits_for_percentage','hits_for','hits_for+hits_against'),
     ('fenwick_shot_percentage_for','goals_for','fenwick_for'),
     ('expected_goals_for_per_fenwick_for','expected_goals_for','fenwick_for'),
@@ -1711,6 +1714,8 @@ SKILL_COMPOSITES = {
         'controlled_exits_per_sixty',
     ],
     'physicality': [
+        'hits_applied_per_sixty',
+        'hits_received_per_sixty',
         'hits_for_per_sixty',
         'hits_against_per_sixty',
         'penalty_minutes_per_sixty',

@@ -755,14 +755,7 @@ def nhl_scrape_draft_rankings(arg:str | Literal['now'] = 'now', category:int = 0
         arg (str, optional):
             Date formatted as 'YYYY-MM-DD' to scrape draft rankings for specific date or 'now' for current draft rankings. Default is 'now'.
         category (int, optional):
-            Category number for prospects.  When arg = 'now' this does not apply.
-
-            - Category 1 is North American Skaters.
-            - Category 2 is International Skaters.
-            - Category 3 is North American Goalies.
-            - Category 4 is International Goalies
-
-            Default is 0 (all prospects).
+            Category number for prospects. When ``arg='now'`` this does not apply. Categories: 1=North American Skaters, 2=International Skaters, 3=North American Goalies, 4=International Goalies. Default is 0 (all prospects).
             
     Returns:
         pd.DataFrame: 
@@ -1340,24 +1333,8 @@ def nhl_plot_events(
     pbp_plot = pbp0.loc[pbp0['event_type'].isin(events)] if events else pbp0
 
     roster = pd.read_csv(DEFAULT_ROSTER)
-    team_data = pd.read_csv(INFO_PATH)
-
-    def _team_primary_color(team_abbr: str, season_val: int) -> str:
-        rows = team_data.loc[team_data['wsba_id'] == f'{team_abbr}{season_val}']
-        if rows.empty:
-            return '#1f77b4'
-        return rows['primary_color'].iloc[0]
-
-    primary_color_by_wsba_id = dict(zip(team_data['wsba_id'].astype(str), team_data['primary_color'].astype(str)))
-
-    def _apply_primary_colors(df: pd.DataFrame) -> pd.DataFrame:
-        if 'event_team_abbr' not in df.columns or 'season' not in df.columns:
-            df['color'] = '#1f77b4'
-            return df
-        seasons_row = pd.to_numeric(df['season'], errors='coerce').astype('Int64')
-        wsba_ids = df['event_team_abbr'].astype(str).str.upper() + seasons_row.astype(str)
-        df['color'] = wsba_ids.map(primary_color_by_wsba_id).fillna('#1f77b4')
-        return df
+    team_data = load_teaminfo()
+    primary_color_by_wsba_id = team_primary_color_map(team_data)
 
     results = {}
 
@@ -1414,7 +1391,7 @@ def nhl_plot_events(
                 continue
 
             rows = rows.copy()
-            rows = _apply_primary_colors(rows)
+            rows = apply_primary_colors(rows, primary_color_by_wsba_id)
 
             plot_title = title if title is not None else f'{team_abbr} Events'
             results[team_abbr] = plot_events(
@@ -1437,7 +1414,7 @@ def nhl_plot_events(
                 continue
 
             rows = rows.copy()
-            rows = _apply_primary_colors(rows)
+            rows = apply_primary_colors(rows, primary_color_by_wsba_id)
 
             plot_title = title if title is not None else f'{player_name} Events'
             results[player_id] = plot_events(
@@ -1462,7 +1439,7 @@ def nhl_plot_events(
                 continue
 
             rows = rows.copy()
-            rows = _apply_primary_colors(rows)
+            rows = apply_primary_colors(rows, primary_color_by_wsba_id)
 
             plot_title = title if title is not None else f'{goalie_name} Goalie Events'
             results[goalie_id] = plot_events(
@@ -1488,7 +1465,7 @@ def nhl_plot_events(
                 continue
 
             coached = coached.copy()
-            coached = _apply_primary_colors(coached)
+            coached = apply_primary_colors(coached, primary_color_by_wsba_id)
 
             plot_title = title if title is not None else f'{coach} Events'
             results[coach] = plot_events(

@@ -29,7 +29,8 @@ plots_1[game_1].savefig(f'{dir}/samples/sample_game_plot.png', bbox_inches='tigh
 # Plot the shots of a random skater in the second random game in the play-by-play data
 game_2 = pbp['game_id'].unique()[1]
 skater = int(pbp.loc[pbp['game_id']==game_2, 'home_on_3_id'].iloc[5])
-plots_2 = wsba.nhl_plot_events(pbp, 'skater', skater, season_types=[2,3], display_range='offense', rotation=90)
+skater_name = wsba.nhl_scrape_player_info([skater])['player_name'].iloc[0]
+plots_2 = wsba.nhl_plot_events(pbp, 'skater', skater, season_types=[2,3], display_range='offense', rotation=90, titles=f'{skater_name} Fenwick Shots')
 plots_2[skater].savefig(f'{dir}/samples/sample_skater_plot.png', bbox_inches='tight')
 
 # Standings Scraping

@@ -40,6 +40,11 @@ jobs:
         run: |
           rm -rf docs/build
 
+      - name: Generate API docs (autodoc)
+        run: |
+          rm -rf docs/source/api
+          python -m sphinx.ext.apidoc -f -o docs/source/api src/wsba_hockey src/wsba_hockey/tools/archive src/wsba_hockey/tools/__pycache__
+
       - name: Build Sphinx HTML
         run: |
           sphinx-build -b html docs/source docs/build/html
@@ -75,6 +80,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Clean previous distributions
+        run: |
+          rm -rf dist
 
       - name: Build distributions
         run: |
