@@ -74,7 +74,7 @@ pbp = wsba.nhl_scrape_season(20212022, remove=[], local=True)
 plots = wsba.nhl_plot_events(
     pbp,
     group="game",
-    entities=[2021020001],
+    entities=[2021020002],
     events=["goal", "shot-on-goal", "missed-shot", "blocked-shot"],
     strengths=["5v5"],
     season_types=2,
@@ -82,10 +82,10 @@ plots = wsba.nhl_plot_events(
     rotation=0,
     display_range="full",
 )
-plots[2021020001].savefig("skater_events.png", bbox_inches="tight")
+plots[2021020002].savefig("skater_events.png", bbox_inches="tight")
 ```
 #### Sample Plot:
-
+![Sample Plot](https://github.com/user-attachments/assets/62eef377-7f88-4f29-b6ba-2ca8d7810fa4)
 
 ## REPOSITORY 
 ### Team Information
