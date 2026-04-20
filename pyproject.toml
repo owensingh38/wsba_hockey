@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wsba_hockey"
-version = "1.5.0"
+version = "1.6.0"
 authors = [
   { name="Owen Singh", email="owenbksingh@gmail.com" },
 ]
@@ -32,6 +32,7 @@ keywords = ["wsba","hockey","scraping","NHL","analytics"]
 
 [project.urls]
 Homepage = "https://github.com/owensingh38/wsba_hockey/"
+Documentation = "https://weakside-breakout-analysis.github.io/wsba_hockey/"
 
 [tool.setuptools]
 include-package-data = true

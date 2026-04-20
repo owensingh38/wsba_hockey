@@ -202,7 +202,6 @@ COL_MAP = {
     },
     'roster':{
         "id": "player_id",
-        "playerId": "player_id",
         "gameId": "game_id",
         "teamId": "team_id",
         "team_abbr": "team_abbr",
@@ -622,6 +621,8 @@ COL_MAP = {
         'Carries Against': 'carry_entries_against',
         'Carries w/ Chance Against': 'carry_entry_chances_against',
         'Dump-in w/ Chance Against': 'dump_in_chances_against',
+        'Recovered Dump-ins per 60': 'recovered_dump_ins_per_sixty',
+        'Entries Allowed Leading to Scoring Chances per 60': 'entry_chances_against_per_sixty',
         'NZ Turnover': 'neutral_zone_giveaways',
         '5v4 Entries': '5v4_entries',
         '5v4 Carries': '5v4_carry_entries',
@@ -630,6 +631,32 @@ COL_MAP = {
         '4v5 Carry Denials': '4v5_disrupted_entries'
     }
 }
+
+PBP_COLS = [
+    'season','season_type','game_id','game_date',"start_time","venue","venue_location",
+    'away_team_abbr','home_team_abbr','event_num','period','period_type',
+    'seconds_elapsed','period_time','game_time',"strength_state","strength_state_venue","home_team_defending_side",
+    "event_type_code","event_type","event_id","description","event_reason",
+    "penalty_type","penalty_duration","penalty_attribution",
+    "event_team_abbr","event_team_venue",
+    'num_on', 'players_on','ids_on','num_off','players_off','ids_off','shift_type',
+    "event_player_1_name","event_player_2_name","event_player_3_name",
+    "event_player_1_id","event_player_2_id","event_player_3_id",
+    "event_player_1_pos","event_player_2_pos","event_player_3_pos",
+    "event_player_1_num","event_player_2_num","event_player_3_num",
+    "event_goalie_name","event_goalie_id","event_goalie_num",
+    "shot_type","zone_code","x","y","x_fixed","y_fixed","x_adj","y_adj",
+    "event_skaters","away_skaters","home_skaters",
+    "event_distance","event_angle","event_length","seconds_since_last",
+    "away_score","home_score", "away_fenwick", "home_fenwick",'ppt_replay_url',
+    "away_on_1","away_on_2","away_on_3","away_on_4","away_on_5","away_on_6","away_goalie",
+    "home_on_1","home_on_2","home_on_3","home_on_4","home_on_5","home_on_6","home_goalie",
+    "away_on_1_id","away_on_2_id","away_on_3_id","away_on_4_id","away_on_5_id","away_on_6_id","away_goalie_id",
+    "home_on_1_id","home_on_2_id","home_on_3_id","home_on_4_id","home_on_5_id","home_on_6_id","home_goalie_id",
+    "away_on_1_pos","away_on_2_pos","away_on_3_pos","away_on_4_pos","away_on_5_pos","away_on_6_pos",
+    "home_on_1_pos","home_on_2_pos","home_on_3_pos","home_on_4_pos","home_on_5_pos","home_on_6_pos",
+    "event_coach","away_coach","home_coach"
+]
 
 CONVERT_SEASONS = {
     2007: 20072008, 
@@ -800,7 +827,6 @@ NON_TOTALS = [
     'percentage',
     'percentile',
     'impact',
-    'induction',
     'game_date',
     'game_id',
     'season',
@@ -934,7 +960,10 @@ METRIC_LOOKUP = {
     'Fenwick': 'is_fenwick',
     'Corsi': 'is_corsi',
     'Giveaways': 'is_give',
-    'Takeaways': 'is_take'
+    'Takeaways': 'is_take',
+    'Blocks': 'is_block',
+    'Hits': 'is_hit',
+    'Penalties': 'is_penalty'
 }
 
 METRIC_EVENTS = {
@@ -944,7 +973,10 @@ METRIC_EVENTS = {
     'Fenwick': FENWICK_EVENTS,
     'Corsi': FENWICK_EVENTS+['blocked-shot'],
     'Giveaways': ['giveaway'],
-    'Takeaways': ['takeaway']
+    'Takeaways': ['takeaway'],
+    'Blocks': ['blocked-shot'],
+    'Hits': ['hit'],
+    'Penalties': ['penalty']
 }
 
 LEGEND_ELEMENTS = [
@@ -1435,8 +1467,9 @@ DATASET_COL = {
         'exits', 'pass_exits', 'retrievals', 'retrievals_leading_to_exits', 'botched_retrievals',
         'puck_recoveries','missed_pass_exits', 
         'neutral_zone_giveaways', 
-        'passes', 'carries',
-        'rush_fenwick_assists'
+        'passes', 'carries', 'recovered_dump_ins',
+        'entry_chances_against',
+        'cycle_fenwick_assists','forecheck_fenwick_assists','rush_fenwick_assists'
     ],
     
     'wsba':[
@@ -1461,9 +1494,10 @@ DATASET_COL = {
         'height_in','weight_lbs',
         'birth_date','age','birth_country',
         'hits_for','giveaways','takeaways',
-        'penalties','minor_penalties','major_penalties',
-        'penalty_minutes','penalty_minutes_drawn',
-        'faceoff_wins','hits_against','penalties_drawn','faceoff_losses','blocked_shots'
+        'penalties','minor_penalties','major_penalties','fighting_penalties','penalty_minutes',
+        'penalties_drawn','minor_penalties_drawn','major_penalties_drawn','fighting_penalties_drawn','penalty_minutes_drawn',
+        'faceoff_wins','hits_against','faceoff_losses','blocked_shots',
+        'standings_points'
     ],
     'edge':[
         'top_shot_speed', 'max_skating_speed',
@@ -1523,12 +1557,13 @@ AGG_POST_METRICS = [
     ('retrievals_leading_to_zone_exits_percentage', 'retrievals_leading_to_zone_exits', 'retrieval_attempts'),
     ('controlled_exits_percentage', 'controlled_exits', 'exit_attempts'),
     ('controlled_entries_percentage', 'controlled_entries', 'entry_attempts'),
-    ('controlled_entries_against_percentage', 'controlled_entries_against', 'entry_attempts_against')
+    ('controlled_entries_against_percentage', 'controlled_entries_against', 'entry_attempts_against'),
+    ('forechecking_percentage', 'recovered_dump_ins', 'forechecking_pressures')
 ]
 
 FRONT_COL = ['player_name', 'player_id', 'season', 'team_abbr', 'headshot','position','handedness','height_in','weight_lbs','birth_date','birth_country','nationality','season_year','age','wsba_id']
 
-SPECIAL_KEYS = ['percentage', 'bursts_', 'rapm', 'total_distance_skated', 'max_', 'top_', 'min_', 'bottom_', 'avg_', 'mean_', 'count_', 'std_', 'var_', 'variance_', 'size_', '_per_', 'betweenness', 'pagerank', 'closeness', 'weighted_degree', 'offensive_network_value']
+SPECIAL_KEYS = ['percentage', 'bursts_', 'rapm', 'total_distance_skated', 'max_', 'top_', 'min_', 'bottom_', 'avg_', 'mean_', 'count_', 'std_', 'var_', 'variance_', 'size_', '_per_']
 
 TEAM_NAME_TO_ABBR = {
     "ANAHEIM DUCKS": "ANA",
@@ -1626,16 +1661,14 @@ RAPM_STATS = [
     'fenwick',
     'shots',
     'goals',
-    'expected_goals'
+    'expected_goals',
+    'penalty_minutes'
 ]
 
 SKILL_COMPOSITES = {
     'generation': [
-        'rapm_expected_goals_for_per_sixty',
-        'weighted_degree_per_sixty',
-        'betweenness_per_sixty',
-        'pagerank_per_sixty',
-        'closeness_per_sixty'
+        'expected_goals_per_sixty',
+        'primary_expected_assists_per_sixty'
     ],
     'completion': [
         'retrievals_percentage',
@@ -1647,45 +1680,56 @@ SKILL_COMPOSITES = {
         'controlled_entries_per_sixty',
         'carry_entry_chances_per_sixty',
         'rush_fenwick_assists_per_sixty',
-    ],
-    'speed': [
-        'bursts_20_to_22_per_sixty',
-        'bursts_over_20_per_sixty'
+        'entries_percentage'
     ],
     'prevention': [
+        'entry_chances_against_per_sixty',
         'controlled_entries_against_per_sixty',
-        'carry_entries_against_per_sixty',
-        'pass_entries_against_per_sixty',
-        'carry_entry_chances_against_per_sixty',
+        'carry_entry_chances_against_per_sixty',  
     ],
     'disruption': [
+        'entries_against_percentage',
         'dump_ins_against_per_sixty',
         'disrupted_entries_per_sixty'
     ],
-    'pressing': [
+    'sustainment': [
         'dump_ins_per_sixty',
-        'forechecking_pressures_per_sixty'
+        'clear_exits_per_sixty',
+        'dump_in_chances_per_sixty',
+        'forechecking_pressures_per_sixty',
+        'recovered_dump_ins_per_sixty'
+    ],
+    'pressuring': [
+        'recovered_dump_ins_per_sixty',
+        'forechecking_pressures_per_sixty',
+        'forechecking_percentage'
     ],
     'transportation': [
-        'clear_exits_per_sixty',
-        'carry_exits_per_sixty',
+        'retrievals_percentage',
+        'exits_percentage',
         'retrievals_leading_to_exits_per_sixty',
         'controlled_exits_per_sixty',
     ],
     'physicality': [
         'hits_for_per_sixty',
-        'hits_against_per_sixty'
+        'hits_against_per_sixty',
+        'penalty_minutes_per_sixty',
+        'penalty_minutes_drawn_per_sixty'
     ],
-    'suppression': [
-        'rapm_expected_goals_against_per_sixty'
-    ],
-    'playmaking': [
+    'goal_inducing': [
         'primary_assists_per_sixty',
         'primary_assists_per_primary_expected_assists'
     ],
     'goal_scoring': [
         'goals_per_sixty',
         'goals_per_expected_goals'
+    ],
+    'consistency': [
+        'game_score_consistency'
+    ],
+    'speed': [
+        'bursts_20_to_22_per_sixty',
+        'bursts_over_20_per_sixty'
     ]
 }
 
@@ -1700,6 +1744,7 @@ def shift_cols(max_periods):
         *[f'offense_on_{i}_id' for i in range(1,7)],
         *[f'defense_on_{i}_id' for i in range(1,7)],
         'offense_goalie_id', 'defense_goalie_id',
+        'offense_coach', 'defense_coach',
         *[f'{stat}_for' for stat in RAPM_STATS],
         *[f'{stat}_for_per_sixty' for stat in RAPM_STATS],
         'offensive_faceoff', 'neutral_faceoff', 'defensive_faceoff',
@@ -1730,46 +1775,75 @@ MEASURES = [
 ]
 
 COMPONENTS = [
-    'even_strength_offensive_playdriving',
-    'even_strength_defensive_playdriving',
-    'power_play_offensive_playdriving',
-    'penalty_kill_defensive_playdriving',
+    'even_strength_generation',
+    'even_strength_suppression',
+    'power_play_generation',
+    'penalty_kill_suppression',
     'finishing',
-    'setting',
+    'induction',
     'taken_penalties',
     'drawn_penalties'
 ]
 
 RATINGS = {
-    'offensive_playdriving': [
-        'even_strength_offensive_playdriving',
-        'power_play_offensive_playdriving'
+    'generation': [
+        'even_strength_generation',
+        'power_play_generation'
     ],
-    'defensive_playdriving': [
-        'even_strength_defensive_playdriving',
-        'penalty_kill_defensive_playdriving'
+    'suppression': [
+        'even_strength_suppression',
+        'penalty_kill_suppression'
     ],
-    'talent': [
+    'production': [
         'finishing',
-        'setting'
+        'induction'
     ],
     'even_strength': [
-        'even_strength_offensive_playdriving',
-        'even_strength_defensive_playdriving'
+        'even_strength_generation',
+        'even_strength_suppression'
     ],
     'penalties': [
         'taken_penalties',
         'drawn_penalties'
     ],
-    'goals_above_replacement': COMPONENTS
+    'offense': [
+        'generation',
+        'finishing',
+        'induction'
+    ],
+    'defense': [
+        'suppression'
+    ],
+    'expected_goals_above_replacement': [
+        'even_strength_generation',
+        'even_strength_suppression',
+        'power_play_generation',
+        'penalty_kill_suppression',
+        'taken_penalties',
+        'drawn_penalties'
+    ],
+    'goals_above_replacement': [
+        'even_strength_generation',
+        'even_strength_suppression',
+        'power_play_generation',
+        'penalty_kill_suppression',
+        'finishing',
+        'induction',
+        'taken_penalties',
+        'drawn_penalties'
+    ]
 }
 
 REPLACEMENT_THRESHOLD = {
     'even_strength': {'F': 13, 'D': 7},
     'power_play': {'F': 9, 'D': 4},
     'penalty_kill': {'F': 8 ,'D': 6},
-    'all': {'F': 13, 'D': 7}
+    'all': {'F': 13, 'D': 7, 'G': 3}
 }
+
+RINK_X = np.arange(-100, 100, 1, dtype=np.float32)
+RINK_Y = np.arange(-42, 43, 1, dtype=np.float32)
+HALF_X = np.arange(0, 100, 1, dtype=np.float32)
 
 ## SHARED FUCNCTIONS ##
 # Most of the code originates (entirely or partially) from the hockey_scraper package by Harry Shomer
@@ -1793,7 +1867,8 @@ def convert_to_seconds(minutes):
 
 def get_contents(game_html):
     #Parse NHL HTML PBP document
-    parsers = ["html5lib", "lxml", "html.parser"]
+    # Prefer faster parsers first; fall back only if needed.
+    parsers = ["lxml", "html.parser", "html5lib"]
     strainer = SoupStrainer('td', attrs={'class': re.compile(r'bborder')})
 
     for parser in parsers:

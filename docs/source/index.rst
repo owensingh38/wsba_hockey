@@ -1,7 +1,13 @@
-WSBA Hockey Package Documentation
-================
+WSBA Hockey
+===========
 
-.. automodule:: wsba_hockey.wsba_main
-   :members:
-   :undoc-members:
-   :show-inheritance:
+WSBA Hockey is a Python package for scraping and analyzing hockey data (primarily NHL schedule, play-by-play, and shifts).
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Contents
+
+   quickstart
+   scraping
+   plotting
+   api

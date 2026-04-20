@@ -105,15 +105,19 @@ def process_stats(df, group, venue, game_strength, second_group):
     if group == 'team':
         df['hits_for'] = ((event=='hit') & team_mask).astype(int)
         df['hits_against'] = ((event=='hit') & opp_mask).astype(int)
+        
         df['penalties'] = ((event=='penalty') & team_mask).astype(int)
         df['minor_penalties'] = ((event=='penalty') & (penalty_duration==2) & team_mask).astype(int)
         df['major_penalties'] = ((event=='penalty') & (penalty_duration==5) & team_mask).astype(int)
         df['fighting_penalties'] = ((event=='penalty') & (penalty_type=='fighting') & team_mask).astype(int)
         df['penalty_minutes'] = df.loc[(event=='penalty') & team_mask, 'penalty_duration']
+        
         df['penalties_drawn'] = ((event=='penalty') & opp_mask).astype(int)
         df['minor_penalties_drawn'] = ((event=='penalty') & (penalty_duration==2) & opp_mask).astype(int)
         df['major_penalties_drawn'] = ((event=='penalty') & (penalty_duration==5) & opp_mask).astype(int)
+        df['fighting_penalties_drawn'] = ((event=='penalty') & (penalty_type=='fighting') & opp_mask).astype(int)
         df['penalty_minutes_drawn'] = df.loc[(event=='penalty') & opp_mask, 'penalty_duration']
+        
         df['giveaways'] = ((event=='giveaway') & team_mask).astype(int)
         df['takeaways'] = ((event=='takeaway') & team_mask).astype(int)
         df['blocked_shots'] = df['corsi_against']-df['fenwick_against']
@@ -160,7 +164,10 @@ def process_stats(df, group, venue, game_strength, second_group):
             'fighting_penalties': ('fighting_penalties','sum'),
             'penalty_minutes': ('penalty_minutes','sum'),
             'penalties_drawn': ('penalties_drawn','sum'),
-            'penalty_minutes_drawn': ('penalty_minutes_drawn', 'sum'),
+            'minor_penalties_drawn': ('minor_penalties_drawn','sum'),
+            'major_penalties_drawn': ('major_penalties_drawn','sum'),
+            'fighting_penalties_drawn': ('fighting_penalties_drawn','sum'),
+            'penalty_minutes_drawn': ('penalty_minutes_drawn','sum'),
             'giveaways': ('giveaways','sum'),
             'takeaways': ('takeaways','sum'),
             'blocked_shots': ('blocked_shots','sum')
@@ -236,6 +243,9 @@ def calc_indv(pbp,game_strength,second_group):
             primary_assists=('is_goal', 'sum'),
             hits_against=('is_hit', 'sum'),
             penalties_drawn=('is_penalty', 'sum'),
+            minor_penalties_drawn=('is_minor', 'sum'),
+            major_penalties_drawn=('is_major', 'sum'),
+            fighting_penalties_drawn=('is_fighting', 'sum'),
             penalty_minutes_drawn=('penalty_duration', 'sum'),
             faceoff_losses=('is_faceoff', 'sum'),
             blocked_shots=('is_block', 'sum')
@@ -355,6 +365,10 @@ def calc_team(pbp,game_strength,second_group):
         fighting_penalties=('fighting_penalties','sum'),
         penalty_minutes=('penalty_minutes','sum'),
         penalties_drawn=('penalties_drawn','sum'),
+        minor_penalties_drawn=('minor_penalties_drawn','sum'),
+        major_penalties_drawn=('major_penalties_drawn','sum'),
+        fighting_penalties_drawn=('fighting_penalties_drawn','sum'),
+        penalty_minutes_drawn=('penalty_minutes_drawn','sum'),
         giveaways=('giveaways','sum'),
         takeaways=('takeaways','sum'),
         blocked_shots=('blocked_shots','sum')
@@ -417,7 +431,7 @@ def rank_stats(df, rates=True, comparison=True, group_by=None):
 
     #Skip if no data from this function is desired
     if not rates and not comparison:
-        return df
+        return df.drop(columns=['head_position'])
     else:
         for stat in df.columns:
             if stat not in BIO_STAT_COL + ['player_id', 'season', 'time_on_ice', 'position', 'position_group'] \

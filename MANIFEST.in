@@ -1,0 +1,4 @@
+prune dist
+prune docs/build
+prune __pycache__
+global-exclude *.pyc

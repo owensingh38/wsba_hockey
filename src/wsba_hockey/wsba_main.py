@@ -5,6 +5,7 @@ import requests as rs
 import pandas as pd
 import matplotlib
 import datetime as dt
+from numbers import Integral
 from typing import Literal, Union
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,16 +51,16 @@ def nhl_scrape_game(
             If True, includes a list of game IDs that failed to scrape in the return. Default is False.
 
     Returns:
-        pd.DataFrame:
-            If split_shifts is False, returns a single DataFrame of play-by-play data.
-        dict[str, pd.DataFrame]:
-            If split_shifts is True, returns a dictionary with keys:
-            - 'pbp': play-by-play events
-            - 'shifts': shift change events
-            - 'errors' (optional): list of game IDs that failed if errors=True
-        tuple[pd.DataFrame | dict[str, pd.DataFrame], pd.DataFrame]:
-            If export_roster is True, returns pbp in df or dict (depending on split_shifts)
-            as well as a DataFrame of rosters for all players each of the provided games.
+        If `split_shifts` is False, returns a single DataFrame of play-by-play data.
+
+        If `split_shifts` is True, returns a dictionary with keys:
+
+        - `'pbp'`: play-by-play events
+        - `'shifts'`: shift change events
+        - `'errors'` (optional): list of game IDs that failed if `errors=True`
+
+        If `export_roster` is True, returns a tuple of (pbp, roster_df), where pbp is either a DataFrame
+        or a dict (depending on `split_shifts`).
     """
     
     #Wrap game_id in a list if only a single game_id is provided
@@ -318,13 +319,13 @@ def nhl_scrape_season(
             If True, includes a list of game IDs that failed to scrape in the return. Default is False.
 
     Returns:
-        pd.DataFrame:
-            If split_shifts is False, returns a single DataFrame of play-by-play data.
-        dict[str, pd.DataFrame]:
-            If split_shifts is True, returns a dictionary with keys:
-            - 'pbp': play-by-play events
-            - 'shifts': shift change events
-            - 'errors' (optional): list of game IDs that failed if errors=True
+        If `split_shifts` is False, returns a single DataFrame of play-by-play data.
+
+        If `split_shifts` is True, returns a dictionary with keys:
+
+        - `'pbp'`: play-by-play events
+        - `'shifts'`: shift change events
+        - `'errors'` (optional): list of game IDs that failed if `errors=True`
     """
      
     #Determine whether to use schedule data in repository or to scrape
@@ -1193,6 +1194,11 @@ def nhl_agg_stats(
     #manual_agg is added after the initial prep in order to update values that may originally exist
     clause.update(manual_agg)
 
+    #If groupby list is blank, sum everything
+    if not group_by:
+        games_df['_all'] = '_all'
+        group_by = ['_all']
+
     #Apply group-by
     complete = games_df.groupby(by=group_by,as_index=False).agg(clause)
 
@@ -1226,208 +1232,285 @@ def nhl_agg_stats(
 
     return complete
 
-def nhl_plot_skaters_shots(
-        pbp:pd.DataFrame, 
-        skater_dict:dict[str | int, list[int, str]], 
-        strengths:Union[Literal['all'], str, list[str]] = 'all', 
-        season_types: int | list[int] = 2, 
-        strengths_title:str | None = None, 
-        marker_dict:dict = EVENT_MARKERS, 
-        situation:Literal['indv','for','against'] = 'indv', 
-        titles:str| list[str] | None = None, 
-        legend:bool = False
-    ) -> dict[str | int, dict[int, dict[str, matplotlib.figure.Figure]]]:
+def nhl_plot_events(
+        pbp:pd.DataFrame,
+        group:Literal['skater','goalie','team','coach','game'],
+        entities:int | str | list[int] | list[str],
+        events:Union[Literal['all'], str, list[str]] = FENWICK_EVENTS,
+        season:int | list[int] | None = None,
+        strengths:Union[Literal['all'], str, list[str]] = 'all',
+        season_types: int | list[int] = 2,
+        strengths_title:str | None = None,
+        marker_dict:dict = EVENT_MARKERS,
+        team_colors:dict = {'away':'primary','home':'primary'},
+        titles:str| list[str] | None = None,
+        legend:bool = False,
+        rotation:int | None = 0,
+        display_range:str = 'full'
+    ):
     """
-    Return a dictionary of shot plots for the specified skaters.
-
-    Args:
-        pbp (pd.DataFrame):
-            A DataFrame containing play-by-play event data to be visualized.
-        player_dict (dict[str or int, list[int, str]]):
-            Dictionary of players to plot, where each key is a player name and the value is a list 
-            with season and team info (e.g., {'Patrice Bergeron': [20212022, 'BOS']} or {8470638: [20212022, 'BOS']}).  
-        strengths (str or list[str], optional):
-            List of game strength states to include (e.g., ['5v5','5v4','4v5']).
-        season_types (int or List[int], optional):
-            List of season_types to include in scraping process.  Default is all regular season and playoff games which are 2 and 3 respectively.
-        strengths_title (str or None, optional):
-            Specify a title to describe the strengths states included in the plot.  Default is None (strengths shown will be a full list of the included strengths in the plot).
-        marker_dict (dict[str, dict], optional):
-            Dictionary of event types mapped to marker styles used in plotting.
-        situation (Literal['indv', 'for', 'against'], optional):
-            Determines which shot events to include for the player:
-            - 'indv': only the player's own shots,
-            - 'for': shots taken by the player's team while they are on ice,
-            - 'against': shots taken by the opposing team while the player is on ice.
-        titles (str or list[str], optional):
-            List of titles for each plot defined in player_dict.  Use empty quotes for a blank title and if no titles argument is provided, use a default title.
-        legend (bool, optional):
-            Whether to include a legend on the plots.
-
-    Returns:
-        Dict[str or int, Dict[int, Dict[str, matplotlib.figure.Figure]]]:
-            A dictionary mapping each skater’s name or id to their corresponding season, team, then matplotlib heatmap figure.
-    """
-
-    print(f'Plotting the following skater shots: {skater_dict}...')
-
-    roster = pd.read_csv(DEFAULT_ROSTER)
-
-    #Iterate through skaters, adding plots to dict
-    skater_plots = {}
-
-    #If single values provided for columns typically in a list then place them into a list
-    if isinstance(season_types, int):
-        season_types = [season_types]
-    if isinstance(strengths, str) and strengths != 'all':
-        strengths = [strengths]
-
-    #Fill in titles list as necessary (use NoneType to direct the loop to generate the default title)
-    if isinstance(titles, str):
-        titles = [titles]
-    elif not titles:
-        titles = []
-
-    while len(skater_dict.keys()) > len(titles):
-        titles.append(None)
-
-    for title, skater in zip(titles, skater_dict.keys()):
-        skater_name = skater.title() if isinstance(skater, str) else roster.loc[roster['player_id']==skater,'player_name'].iloc[0].title()
-        skater_info = skater_dict[skater]
-        
-        title = f'{skater_name} Fenwick Shots for {skater_info[1]} in {str(skater_info[0])[2:4]}-{str(skater_info[0])[6:8]}' if not title else title
-            
-        #Key is formatted as IDSEASONTEAM (i.e. 847063820212022BOS)
-        skater_plots.update({skater:{skater_info[0]:{skater_info[1]:plot_skater_shots(pbp,skater,skater_info[0],skater_info[1],strengths,season_types,strengths_title,title,marker_dict,situation,legend)}}})
-
-    #Return: list of plotted skater shot charts
-    return skater_plots
-
-def nhl_plot_heatmap(
-        pbp:pd.DataFrame, 
-        player_dict:dict[str | int | Literal[8], list[int, str]], 
-        strengths:Union[Literal['all'], list[str]] = 'all', 
-        season_types: int | list[int] = 2, 
-        strengths_title:str | None = None, 
-        metric:Literal['xG', 'Goals', 'Shots', 'Fenwick', 'Corsi', 'Giveaways', 'Takeaways'] = 'Fenwick', 
-        compare:bool = True, 
-        titles:str | list[str] | None = None
-    ) -> dict[str | int | Literal[8], dict[int, dict[str, matplotlib.figure.Figure]]]:
-    """
-    Return a dictionary of heatmaps for the specified players or teams.
-
-    Args:
-        pbp (pd.DataFrame):
-            A DataFrame containing play-by-play event data to be visualized.
-        player_dict (dict[str or int, list[int, str]]):
-            Dictionary of players to plot, where each key is a player name and the value is a list 
-            with season and team info (e.g., {'Patrice Bergeron': [20212022, 'BOS']} or {8470638: [20212022, 'BOS']}).  
-            Setting the key to the int value 8 will generate a heatmap for the full team.
-        strengths (str or list[str], optional):
-            List of game strength states to include (e.g., ['5v5','5v4','4v5']).
-        season_types (int or List[int], optional):
-            List of season_types to include in scraping process.  Default is all regular season and playoff games which are 2 and 3 respectively.
-        strengths_title (str or None, optional):
-            Specify a title to describe the strengths states included in the plot.  Default is None (strengths shown will be a full list of the included strengths in the plot).
-        metric (Literal['xG', 'Goals', 'Shots', 'Fenwick', 'Corsi', 'Giveaways', 'Takeaways'], optional):
-            Type of metric to plot.  Default is 'Fenwick' (missed shots, shots on goal, and goals).
-        compare (bool, optional):
-            Determines whether to compare player or team xG to league xG when creating the contours.  Default is True.
-        titles (str or list[str], optional):
-            List of titles for each plot defined in player_dict.  Use empty quotes for a blank title and if no titles argument is provided, use a default title.
-
-    Returns:
-        Dict[str or int, Dict[int, Dict[str, matplotlib.figure.Figure]]]:
-            A dictionary mapping each skater’s name or id to their corresponding season, team, then matplotlib heatmap figure.  The phrase 'Team' takes the place for team heatmaps.
-    """
-
-    print(f'Plotting full-ice heatmap for the following players or teams: {player_dict}...')
-
-    roster = pd.read_csv(DEFAULT_ROSTER)
-
-    #Iterate through players, adding plots to dict
-    player_plots = {}
-    
-    #If single values provided for columns typically in a list then place them into a list
-    if isinstance(season_types, int):
-        season_types = [season_types]
-    if isinstance(strengths, str) and strengths != 'all':
-        strengths = [strengths]    
-    
-    #Fill in titles list as necessary (use NoneType to direct the loop to generate the default title)
-    if isinstance(titles, str):
-        titles = [titles]
-    elif not titles:
-        titles = []
-
-    while len(player_dict.keys()) > len(titles):
-        titles.append(None)
-
-    for title, player in zip(titles, player_dict.keys()):
-        player_info = player_dict[player]
-
-        #Determine whether to create team heatmap or player heatmap
-        if player == 8:
-            player = None
-            player_key = 'Team'
-            title_header = f'{player_info[1]} Team Heatmap'
-        else:
-            #Key provided is the key returned
-            player_key = player
-            player_name = player.title() if isinstance(player, str) else roster.loc[roster['player_id']==player,'player_name'].iloc[0].title()
-            title_header = f'{player_name} Heatmap for {player_info[1]}'
-        
-        title = f'{title_header} in {str(player_info[0])[2:4]}-{str(player_info[0])[6:8]}' if not title else title
-        
-        player_plots.update({player_key:{player_info[0]:{player_info[1]:gen_heatmap(pbp,player,player_info[0],player_info[1],strengths,season_types,metric,compare,strengths_title,title)}}})
-
-    #Return: list of plotted player shot charts
-    return player_plots
-
-def nhl_plot_games(
-        pbp:pd.DataFrame, 
-        events:list[str] = FENWICK_EVENTS, 
-        strengths:Union[Literal['all'], list[str]] = 'all', 
-        game_ids: Union[Literal['all'], list[int]] = 'all', 
-        marker_dict:dict = EVENT_MARKERS, 
-        team_colors:dict = {'away':'primary','home':'primary'}, 
-        legend:bool =False
-    ) -> dict[int, matplotlib.figure.Figure]:
-    """
-    Returns a dictionary of event plots for the specified games.
+    Given play-by-play data, plot arbitrary event locations for a group of entities.
 
     Args:
         pbp (pd.DataFrame):
             A DataFrame containing play-by-play event data.
-        events (str or list[str]):
-            List of event types to include in the plot (e.g., ['shot-on-goal', 'goal']).
-        strengths (str or list[str], optional):
-            List of game strength states to include (e.g., ['5v5','5v4','4v5']).
-        game_ids (str or list[int], optional):
-            List of game IDs to plot. If set to 'all', plots will be generated for all games in the DataFrame.
-        marker_dict (dict[str, dict], optional):
-            Dictionary mapping event types to marker styles and/or colors used in plotting.
+        group (Literal['skater','goalie','team','coach','game']):
+            Entity type to plot (skater, goalie, team, coach, or game).
+        entities (int|str|list[int]|list[str]):
+            List of entities for the specified `group`:
+            - skater/goalie: NHL API player_id(s)
+            - team: team_abbr(s) (e.g. 'BOS')
+            - coach: coach name(s) as stored in `pbp`
+            - game: game_id(s)
+        events (str or list[str] or 'all', optional):
+            Event types to plot. Defaults to `wsba.FENWICK_EVENTS`. Use 'all' to plot all `wsba.EVENTS`.
+        season (int|list[int]|None):
+            If provided, filters season(s). If an int is provided with multiple `entities`, that season is used for all.
+            If a list is provided, it must align one-to-one with `entities`. If None, seasons are inferred from `pbp`.
+        strengths (str or list[str] or 'all', optional):
+            Strength states to include. Default is 'all'.
+        season_types (int or list[int], optional):
+            Season type(s) to include. Default is 2 (regular season).
+        strengths_title (str or None, optional):
+            Optional label for the selected strengths (used on non-game plots).
+        marker_dict (dict, optional):
+            Mapping from event_type to matplotlib marker.
+        team_colors (dict, optional):
+            For game plots, selects 'primary' or 'secondary' for away/home team colors.
+        titles (str or list[str] or None, optional):
+            Optional title(s) aligned with `entities`.
         legend (bool, optional):
-            Whether to include a legend on the plots.
+            If True, show a legend.
+        display_range (str, optional):
+            Rink display range. Passed to `wsba_rink()` / `hockey_rink.NHLRink.draw()` (e.g. 'full', 'offense', 'defense').
+            Default is 'full'.
+        rotation (int or None, optional):
+            Rink rotation (degrees). Default is 0.
 
     Returns:
-        dict[int, matplotlib.figure.Figure]:
-            A dictionary mapping each game ID to its corresponding matplotlib event plot figure.
+        dict:
+            A dictionary of matplotlib figures: {entity: fig}.
     """
 
-    #Find games to scrape
-    if game_ids == 'all':
-        game_ids = pbp['game_id'].drop_duplicates().to_list()
+    if entities is None:
+        entities = []
+    elif not isinstance(entities, list):
+        if isinstance(entities, (str, Integral)):
+            entities = [entities]
+        else:
+            try:
+                entities = list(entities)
+            except TypeError:
+                entities = [entities]
 
-    print(f'Plotting the following games: {game_ids}...')
+    if events == 'all':
+        events = EVENTS
+    elif isinstance(events, str):
+        events = [events]
 
-    game_plots = {}
-    #Iterate through games, adding plot to dict
-    for game in game_ids:
-        game_plots.update({game:plot_game_events(pbp,game,events,strengths,marker_dict,team_colors,legend)})
+    if isinstance(season_types, int):
+        season_types = [season_types]
 
-    #Return: list of plotted game events
-    return game_plots
+    if isinstance(strengths, str) and strengths != 'all':
+        strengths = [strengths]
+
+    if isinstance(titles, str):
+        titles = [titles] * len(entities)
+    elif not titles:
+        titles = []
+    while len(entities) > len(titles):
+        titles.append(None)
+
+    if season is None:
+        seasons = [None] * len(entities)
+    elif isinstance(season, int):
+        seasons = [season] * len(entities)
+    else:
+        seasons = season
+        if len(seasons) != len(entities):
+            raise ValueError("If `season` is a list, it must be the same length as `entities`.")
+
+    pbp0 = pbp
+    if season_types:
+        pbp0 = pbp0.loc[pbp0['season_type'].isin(season_types)]
+
+    if strengths != 'all':
+        pbp0 = pbp0.loc[(pbp0['strength_state'].isin(strengths)) | (pbp0['strength_state'].astype(str).str[::-1].isin(strengths))]
+
+    pbp_plot = pbp0.loc[pbp0['event_type'].isin(events)] if events else pbp0
+
+    roster = pd.read_csv(DEFAULT_ROSTER)
+    team_data = pd.read_csv(INFO_PATH)
+
+    def _team_primary_color(team_abbr: str, season_val: int) -> str:
+        rows = team_data.loc[team_data['wsba_id'] == f'{team_abbr}{season_val}']
+        if rows.empty:
+            return '#1f77b4'
+        return rows['primary_color'].iloc[0]
+
+    primary_color_by_wsba_id = dict(zip(team_data['wsba_id'].astype(str), team_data['primary_color'].astype(str)))
+
+    def _apply_primary_colors(df: pd.DataFrame) -> pd.DataFrame:
+        if 'event_team_abbr' not in df.columns or 'season' not in df.columns:
+            df['color'] = '#1f77b4'
+            return df
+        seasons_row = pd.to_numeric(df['season'], errors='coerce').astype('Int64')
+        wsba_ids = df['event_team_abbr'].astype(str).str.upper() + seasons_row.astype(str)
+        df['color'] = wsba_ids.map(primary_color_by_wsba_id).fillna('#1f77b4')
+        return df
+
+    results = {}
+
+    for title, entity, target_season in zip(titles, entities, seasons):
+        pbp_season = pbp0 if target_season is None else pbp0.loc[pbp0['season'] == target_season]
+        pbp_season_plot = pbp_plot if target_season is None else pbp_plot.loc[pbp_plot['season'] == target_season]
+
+        if group == 'game':
+            game_id = int(entity)
+            game_rows = pbp_season_plot.loc[pbp_season_plot['game_id'] == game_id]
+            if game_rows.empty:
+                continue
+
+            away_abbr = game_rows['away_team_abbr'].iloc[0]
+            home_abbr = game_rows['home_team_abbr'].iloc[0]
+            date = game_rows['game_date'].iloc[0]
+            season_val = int(game_rows['season'].iloc[0])
+
+            away_rows = team_data.loc[team_data['wsba_id'] == f'{away_abbr}{season_val}']
+            home_rows = team_data.loc[team_data['wsba_id'] == f'{home_abbr}{season_val}']
+
+            away_row = away_rows.iloc[0] if not away_rows.empty else None
+            home_row = home_rows.iloc[0] if not home_rows.empty else None
+
+            away_color_raw = (
+                away_row[f"{team_colors['away']}_color"] if away_row is not None and f"{team_colors['away']}_color" in away_row else '#1f77b4'
+            )
+            away_color = (
+                '#000000' if away_row is not None and team_colors['away'] == 'secondary' and away_row.get('secondary_color') == '#FFFFFF' else away_color_raw
+            )
+            home_color = (
+                home_row[f"{team_colors['home']}_color"] if home_row is not None and f"{team_colors['home']}_color" in home_row else '#d62728'
+            )
+
+            game_rows = game_rows.copy()
+            game_rows['color'] = np.where(game_rows['event_team_abbr'] == away_abbr, away_color, home_color)
+
+            plot_title = title if title is not None else f'{away_abbr} @ {home_abbr} - {date}'
+            results[game_id] = plot_events(
+                game_rows,
+                events,
+                title=plot_title,
+                marker_dict=marker_dict,
+                legend=legend,
+                display_range=display_range,
+                rotation=rotation,
+            )
+            continue
+
+        if group == 'team':
+            team_abbr = str(entity).upper()
+            rows = pbp_season_plot.loc[pbp_season_plot['event_team_abbr'].astype(str).str.upper() == team_abbr]
+            if rows.empty:
+                continue
+
+            rows = rows.copy()
+            rows = _apply_primary_colors(rows)
+
+            plot_title = title if title is not None else f'{team_abbr} Events'
+            results[team_abbr] = plot_events(
+                rows,
+                events,
+                title=plot_title,
+                marker_dict=marker_dict,
+                legend=legend,
+                rotation=rotation,
+                display_range=display_range,
+            )
+            continue
+
+        if group == 'skater':
+            player_id = int(entity)
+            player_name = roster.loc[roster['player_id'] == player_id, 'player_name']
+            player_name = player_name.iloc[0].title() if not player_name.empty else str(player_id)
+            rows = pbp_season_plot.loc[pbp_season_plot['event_player_1_id'] == player_id]
+            if rows.empty:
+                continue
+
+            rows = rows.copy()
+            rows = _apply_primary_colors(rows)
+
+            plot_title = title if title is not None else f'{player_name} Events'
+            results[player_id] = plot_events(
+                rows,
+                events,
+                title=plot_title,
+                marker_dict=marker_dict,
+                legend=legend,
+                rotation=rotation,
+                display_range=display_range,
+            )
+            continue
+
+        if group == 'goalie':
+            goalie_id = int(entity)
+            goalie_name = roster.loc[roster['player_id'] == goalie_id, 'player_name']
+            goalie_name = goalie_name.iloc[0].title() if not goalie_name.empty else str(goalie_id)
+            if 'event_goalie_id' not in pbp_season_plot.columns:
+                continue
+            rows = pbp_season_plot.loc[pbp_season_plot['event_goalie_id'] == goalie_id]
+            if rows.empty:
+                continue
+
+            rows = rows.copy()
+            rows = _apply_primary_colors(rows)
+
+            plot_title = title if title is not None else f'{goalie_name} Goalie Events'
+            results[goalie_id] = plot_events(
+                rows,
+                events,
+                title=plot_title,
+                marker_dict=marker_dict,
+                legend=legend,
+                rotation=rotation,
+                display_range=display_range,
+            )
+            continue
+
+        if group == 'coach':
+            coach = str(entity)
+            if 'home_coach' not in pbp_season_plot.columns or 'away_coach' not in pbp_season_plot.columns:
+                continue
+            coached = pbp_season_plot.loc[
+                ((pbp_season_plot['home_coach'] == coach) & (pbp_season_plot['event_team_abbr'] == pbp_season_plot['home_team_abbr']))
+                | ((pbp_season_plot['away_coach'] == coach) & (pbp_season_plot['event_team_abbr'] == pbp_season_plot['away_team_abbr']))
+            ]
+            if coached.empty:
+                continue
+
+            coached = coached.copy()
+            coached = _apply_primary_colors(coached)
+
+            plot_title = title if title is not None else f'{coach} Events'
+            results[coach] = plot_events(
+                coached,
+                events,
+                title=plot_title,
+                marker_dict=marker_dict,
+                legend=legend,
+                rotation=rotation,
+                display_range=display_range,
+            )
+            continue
+
+        raise ValueError(f"Unknown group: {group}")
+
+    if strengths_title and group != 'game':
+        # Add strengths text to all non-game figures (keeps output similar to other plotting helpers).
+        for fig in results.values():
+            fig.text(0.5, 0.07, 'Strength(s)', ha='center', fontsize=10)
+            fig.text(0.5, 0.03, f'{strengths_title}', ha='center', fontsize=10)
+
+    return results
 
 def repo_load_rosters(seasons:list[int] = []) -> pd.DataFrame:
     """
@@ -1442,6 +1525,9 @@ def repo_load_rosters(seasons:list[int] = []) -> pd.DataFrame:
             A DataFrame containing roster data for supplied seasons.
     """
 
+    if isinstance(seasons, int):
+        seasons = [seasons]
+        
     data = pd.read_csv(DEFAULT_ROSTER)
     if not seasons:
         data = data.loc[data['season'].isin(seasons)]
@@ -1460,6 +1546,9 @@ def repo_load_schedule(seasons:list[int] = []) -> pd.DataFrame:
         pd.DataFrame:
             A DataFrame containing the schedule data for the specified season and date range.    
     """
+
+    if isinstance(seasons, int):
+        seasons = [seasons]
 
     data = pd.read_csv(SCHEDULE_PATH)
     if seasons:

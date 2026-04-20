@@ -69,14 +69,29 @@ wsba.nhl_calculate_stats(pbp,'skater',['5v5','4v4','3v3'], 'all',shot_impact = T
 ```
 ### Shot Plotting (Plots, Heatmaps, etc.)
 ```python
-skater_dict = {
-    'Patrice Bergeron':[20212022,'BOS']
-}
-pbp = wsba.nhl_scrape_season(20212022,remove=[], local = True)
+pbp = wsba.nhl_scrape_season(20212022, remove=[], local=True)
 
-wsba.nhl_plot_skaters_shots(pbp,skater_dict,['5v5'],onice='for',legend=True)
-wsba.nhl_plot_heatmap(pbp,skater_dict,['5v5','3v3','4v4'],'Even Strength')
-wsba.nhl_plot_games(pbp,legend=True)
+# Unified event plotting (skater / goalie / team / coach / game)
+wsba.nhl_plot_events(
+    pbp,
+    group="skater",
+    entities=[8470638],  # NHL API player_id
+    season=20212022,
+    events=["goal", "shot-on-goal", "missed-shot"],
+    strengths=["5v5"],
+    season_types=[2, 3],
+    legend=True,
+)
+
+# Heatmaps (player_ids only)
+wsba.nhl_plot_heatmap(
+    pbp,
+    player_ids=[8470638],
+    season=20212022,
+    strengths=["5v5"],
+    season_types=[2, 3],
+    compare=False,
+)
 ```
 
 ## REPOSITORY 

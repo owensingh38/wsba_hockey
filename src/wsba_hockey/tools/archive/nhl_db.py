@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 from typing import Literal, Union
+from wsba_hockey.wsba_main import nhl_plot_events, nhl_plot_heatmap
 from wsba_hockey.tools.scraping import *
 from wsba_hockey.tools.xg_model import *
 from wsba_hockey.tools.agg import *
@@ -195,7 +196,20 @@ class NHL_Database:
                 A dictionary mapping each game ID to its corresponding matplotlib event plot figure.
         """
         
-        self.game_plots.update(nhl_plot_games(self.pbp, events, strengths, game_ids, marker_dict, team_colors, legend))
+        gids = self.pbp['game_id'].drop_duplicates().to_list() if game_ids == 'all' else game_ids
+        self.game_plots.update(
+            nhl_plot_events(
+                self.pbp,
+                'game',
+                gids,
+                events,
+                strengths=strengths,
+                season_types=[2,3],
+                marker_dict=marker_dict,
+                team_colors=team_colors,
+                legend=legend
+            )
+        )
 
         return self.game_plots
     
@@ -237,7 +251,12 @@ class NHL_Database:
                 A dictionary mapping each skater’s name or id to their corresponding season, team, then matplotlib heatmap figure.  The phrase 'Team' takes the place for team heatmaps.
         """
         
-        data = nhl_plot_skaters_shots(self.pbp,player_dict,strengths,season_types,strengths_title,marker_dict,situation,titles,legend) if plot == 'shot' else nhl_plot_heatmap(self.pbp,player_dict,strengths,strengths_title,titles)
+        if plot == 'shot':
+            player_ids = list(player_dict.keys())
+            seasons = [v[0] for v in player_dict.values()]
+            data = nhl_plot_events(self.pbp, 'skater', player_ids, ['goal','missed-shot','shot-on-goal'], season=seasons, strengths=strengths, season_types=season_types, strengths_title=strengths_title, marker_dict=marker_dict, titles=titles, legend=legend)
+        else:
+            data = nhl_plot_heatmap(self.pbp, list(player_dict.keys()), season=[v[0] for v in player_dict.values()], strengths=strengths, season_types=season_types, strengths_title=strengths_title, titles=titles)
 
         self.plots.update(data)
 
