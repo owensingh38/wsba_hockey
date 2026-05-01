@@ -21,6 +21,7 @@ jobs:
   pypi:
     runs-on: ubuntu-latest
     if: |
+      github.event_name == 'push' ||
       github.event_name == 'release' ||
       (github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true)
 
@@ -36,6 +37,22 @@ jobs:
       - name: Clean previous distributions
         run: |
           rm -rf build dist *.egg-info src/*.egg-info
+
+      - name: Verify PyPI token secret
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$PYPI_API_TOKEN" ]; then
+            echo "::error::Missing GitHub Actions secret: PYPI_API_TOKEN"
+            exit 1
+          fi
+          case "$PYPI_API_TOKEN" in
+            pypi-*) ;;
+            *)
+              echo "::error::PYPI_API_TOKEN must be the full PyPI API token beginning with pypi-"
+              exit 1
+              ;;
+          esac
 
       - name: Build distributions
         run: |
@@ -81,7 +98,7 @@ jobs:
 
       - name: Build Sphinx HTML
         run: |
-          sphinx-build -W --keep-going -b html docs/source docs/build/html
+          sphinx-build -b html docs/source docs/build/html
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

@@ -734,8 +734,9 @@ def nhl_scrape_team_info(country:bool = False) -> pd.DataFrame:
             A DataFrame containing team or country information from the NHL API.
     """
 
-    print(f'Scraping {'country' if country else 'team'} information...')
-    api = f'https://api.nhle.com/stats/rest/en/{'country' if country else 'team'}'
+    info_type = 'country' if country else 'team'
+    print(f'Scraping {info_type} information...')
+    api = f'https://api.nhle.com/stats/rest/en/{info_type}'
     
     data =  pd.json_normalize(rs.get(api).json()['data'])
 
@@ -933,7 +934,9 @@ def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrap
 
     end = time.perf_counter()
     length = end-start
-    print(f'...finished in {(length if length <60 else length/60):.2f} {'seconds' if length <60 else 'minutes'}.')
+    elapsed = length if length < 60 else length / 60
+    elapsed_unit = 'seconds' if length < 60 else 'minutes'
+    print(f'...finished in {elapsed:.2f} {elapsed_unit}.')
 
     if df.empty:
         return df
@@ -1078,7 +1081,9 @@ def nhl_calculate_stats(
     
     end = time.perf_counter()
     length = end-start
-    print(f'...finished in {(length if length <60 else length/60):.2f} {'seconds' if length <60 else 'minutes'}.')
+    elapsed = length if length < 60 else length / 60
+    elapsed_unit = 'seconds' if length < 60 else 'minutes'
+    print(f'...finished in {elapsed:.2f} {elapsed_unit}.')
 
     return complete
 
@@ -1250,7 +1255,9 @@ def nhl_agg_stats(
 
     end = time.perf_counter()
     length = end-start
-    print(f'...finished in {(length if length <60 else length/60):.2f} {'seconds' if length <60 else 'minutes'}.')
+    elapsed = length if length < 60 else length / 60
+    elapsed_unit = 'seconds' if length < 60 else 'minutes'
+    print(f'...finished in {elapsed:.2f} {elapsed_unit}.')
 
     return complete
 
