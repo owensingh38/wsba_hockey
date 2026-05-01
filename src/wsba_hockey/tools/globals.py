@@ -742,9 +742,11 @@ SHOT_TYPES = ['wrist','deflected','tip-in','slap','backhand','snap','wrap-around
 EVENTS = ['faceoff','hit','giveaway','takeaway','blocked-shot','missed-shot','shot-on-goal','goal','penalty']
 
 DIR = os.path.dirname(os.path.realpath(__file__))
-SCHEDULE_PATH = os.path.join(DIR,'schedule\\schedule.csv')
-INFO_PATH = os.path.join(DIR,'teaminfo\\nhl_teaminfo.csv')
-DEFAULT_ROSTER = os.path.join(DIR,'rosters\\nhl_rosters.csv')
+PACKAGE_DIR = os.path.abspath(os.path.join(DIR, '..'))
+XG_MODEL_DIR = os.path.join(PACKAGE_DIR, 'xg_model')
+SCHEDULE_PATH = os.path.join(DIR, 'schedule', 'schedule.csv')
+INFO_PATH = os.path.join(DIR, 'teaminfo', 'nhl_teaminfo.csv')
+DEFAULT_ROSTER = os.path.join(DIR, 'rosters', 'nhl_rosters.csv')
 
 GS_SCORE_FEATURES = {
     'skater': [
@@ -877,13 +879,13 @@ STRENGTHS = ['3v3',
             '6v4',
             '6v5']
 
-XG_MODEL = os.path.join(DIR,'xg_model\\wsba_xg.json')
-GAME_SCORE = os.path.join(DIR,'game_score\\')
+XG_MODEL = os.path.join(XG_MODEL_DIR, 'wsba_xg.json')
+GAME_SCORE = os.path.join(DIR, 'game_score')
 
-TEST_PATH = os.path.join(DIR,'xg_model\\testing\\xg_model_training_runs.csv')
-CV_PATH = os.path.join(DIR,'xg_model\\testing\\xg_model_cv_runs.csv')
-METRIC_PATH = os.path.join(DIR,'xg_model\\metrics')
-IMG_PATH = os.path.join(DIR,'utils\\wsba.png')
+TEST_PATH = os.path.join(XG_MODEL_DIR, 'testing', 'xg_model_training_runs.csv')
+CV_PATH = os.path.join(XG_MODEL_DIR, 'testing', 'xg_model_cv_runs.csv')
+METRIC_PATH = os.path.join(XG_MODEL_DIR, 'metrics')
+IMG_PATH = os.path.join(DIR, 'utils', 'wsba.png')
 
 TARGET = "is_goal"
 CONTINUOUS = ['event_distance',
@@ -1658,197 +1660,6 @@ STANDINGS_COLS = [
     'shootout_wins',
     'shootout_losses'
 ]
-
-RAPM_STATS = [
-    'corsi',
-    'fenwick',
-    'shots',
-    'goals',
-    'expected_goals',
-    'penalty_minutes'
-]
-
-SKILL_COMPOSITES = {
-    'generation': [
-        'expected_goals_per_sixty',
-        'primary_expected_assists_per_sixty'
-    ],
-    'completion': [
-        'retrievals_percentage',
-        'exits_percentage',
-        'entries_percentage',
-        'entries_against_percentage',
-    ],
-    'transition': [
-        'controlled_entries_per_sixty',
-        'carry_entry_chances_per_sixty',
-        'rush_fenwick_assists_per_sixty',
-        'entries_percentage'
-    ],
-    'prevention': [
-        'entry_chances_against_per_sixty',
-        'controlled_entries_against_per_sixty',
-        'carry_entry_chances_against_per_sixty',  
-    ],
-    'disruption': [
-        'entries_against_percentage',
-        'dump_ins_against_per_sixty',
-        'disrupted_entries_per_sixty'
-    ],
-    'sustainment': [
-        'dump_ins_per_sixty',
-        'clear_exits_per_sixty',
-        'dump_in_chances_per_sixty',
-        'forechecking_pressures_per_sixty',
-        'recovered_dump_ins_per_sixty'
-    ],
-    'pressuring': [
-        'recovered_dump_ins_per_sixty',
-        'forechecking_pressures_per_sixty',
-        'forechecking_percentage'
-    ],
-    'transportation': [
-        'retrievals_percentage',
-        'exits_percentage',
-        'retrievals_leading_to_exits_per_sixty',
-        'controlled_exits_per_sixty',
-    ],
-    'physicality': [
-        'hits_applied_per_sixty',
-        'hits_received_per_sixty',
-        'hits_for_per_sixty',
-        'hits_against_per_sixty',
-        'penalty_minutes_per_sixty',
-        'penalty_minutes_drawn_per_sixty'
-    ],
-    'goal_inducing': [
-        'primary_assists_per_sixty',
-        'primary_assists_per_primary_expected_assists'
-    ],
-    'goal_scoring': [
-        'goals_per_sixty',
-        'goals_per_expected_goals'
-    ],
-    'consistency': [
-        'game_score_consistency'
-    ],
-    'speed': [
-        'bursts_20_to_22_per_sixty',
-        'bursts_over_20_per_sixty'
-    ]
-}
-
-SECOND_ORDER = {
-}
-
-def shift_cols(max_periods):
-    return [
-        'season', 'game_id', 'shift_id', 'score_state',
-        *[f'period_{i}' for i in range(1,max_periods+1)],
-        'offense_team_abbr', 'defense_team_abbr',
-        *[f'offense_on_{i}_id' for i in range(1,7)],
-        *[f'defense_on_{i}_id' for i in range(1,7)],
-        'offense_goalie_id', 'defense_goalie_id',
-        'offense_coach', 'defense_coach',
-        *[f'{stat}_for' for stat in RAPM_STATS],
-        *[f'{stat}_for_per_sixty' for stat in RAPM_STATS],
-        'offensive_faceoff', 'neutral_faceoff', 'defensive_faceoff',
-        'lead_1', 'lead_2', 'lead_3_plus',
-        'behind_1', 'behind_2', 'behind_3_plus',
-        'offense_back_to_back', 'defense_back_to_back',
-        'power_play_expiry', 'penalty_kill_expiry',
-        'shift_length', 'is_home'
-    ]
-
-RAPM_MODEL = os.path.join(DIR,'rapm\\wsba_rapm.json')
-
-NETWORK_WEIGHTS = {'primary': 0.7, 'secondary': 0.55, 'tertiary': 0.3}
-
-MEASURES = [
-    'rapm_expected_goals_for_per_sixty',
-    'rapm_expected_goals_against_per_sixty',
-    'fenwick_per_sixty',
-    'primary_fenwick_assists_per_sixty',
-    'goals_per_sixty',
-    'expected_goals_per_sixty',
-    'expected_goals_per_fenwick',
-    'primary_assists_per_sixty',
-    'primary_expected_assists_per_sixty',
-    'primary_expected_assists_per_primary_fenwick_assists',
-    'penalty_minutes_per_sixty',
-    'penalty_minutes_drawn_per_sixty'
-]
-
-COMPONENTS = [
-    'even_strength_generation',
-    'even_strength_suppression',
-    'power_play_generation',
-    'penalty_kill_suppression',
-    'finishing',
-    'induction',
-    'taken_penalties',
-    'drawn_penalties'
-]
-
-RATINGS = {
-    'generation': [
-        'even_strength_generation',
-        'power_play_generation'
-    ],
-    'suppression': [
-        'even_strength_suppression',
-        'penalty_kill_suppression'
-    ],
-    'production': [
-        'finishing',
-        'induction'
-    ],
-    'even_strength': [
-        'even_strength_generation',
-        'even_strength_suppression'
-    ],
-    'penalties': [
-        'taken_penalties',
-        'drawn_penalties'
-    ],
-    'offense': [
-        'generation',
-        'finishing',
-        'induction'
-    ],
-    'defense': [
-        'suppression'
-    ],
-    'expected_goals_above_replacement': [
-        'even_strength_generation',
-        'even_strength_suppression',
-        'power_play_generation',
-        'penalty_kill_suppression',
-        'taken_penalties',
-        'drawn_penalties'
-    ],
-    'goals_above_replacement': [
-        'even_strength_generation',
-        'even_strength_suppression',
-        'power_play_generation',
-        'penalty_kill_suppression',
-        'finishing',
-        'induction',
-        'taken_penalties',
-        'drawn_penalties'
-    ]
-}
-
-REPLACEMENT_THRESHOLD = {
-    'even_strength': {'F': 13, 'D': 7},
-    'power_play': {'F': 9, 'D': 4},
-    'penalty_kill': {'F': 8 ,'D': 6},
-    'all': {'F': 13, 'D': 7, 'G': 3}
-}
-
-RINK_X = np.arange(-100, 100, 1, dtype=np.float32)
-RINK_Y = np.arange(-42, 43, 1, dtype=np.float32)
-HALF_X = np.arange(0, 100, 1, dtype=np.float32)
 
 ## SHARED FUCNCTIONS ##
 # Most of the code originates (entirely or partially) from the hockey_scraper package by Harry Shomer

@@ -86,7 +86,7 @@ away_on_2_id,object
 away_on_3_id,object
 away_on_4_id,object
 away_on_5_id,object
-away_on_6_id,object
+away_on_6_id,str
 away_goalie_id,object
 home_on_1_id,object
 home_on_2_id,object

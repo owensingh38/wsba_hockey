@@ -35,6 +35,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
           pip install .
+          pip install pytest
+
+      - name: Run package smoke checks
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+        run: |
+          python -m compileall -q src/wsba_hockey
+          python -c "import wsba_hockey as wsba; print(wsba.__version__)"
+          pytest --collect-only -q
 
       - name: Clean previous builds
         run: |
@@ -47,7 +58,10 @@ jobs:
 
       - name: Build Sphinx HTML
         run: |
-          sphinx-build -b html docs/source docs/build/html
+          sphinx-build -W --keep-going -b html docs/source docs/build/html
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -70,7 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch' && fromJSON(inputs.publish_pypi))
+      (github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true)
 
     steps:
       - name: Checkout repository
@@ -83,13 +97,17 @@ jobs:
 
       - name: Clean previous distributions
         run: |
-          rm -rf dist
+          rm -rf build dist *.egg-info src/*.egg-info
 
       - name: Build distributions
         run: |
           python -m pip install --upgrade pip
-          python -m pip install build
+          python -m pip install build twine
           python -m build
+          twine check dist/*
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}

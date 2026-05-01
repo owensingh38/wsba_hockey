@@ -1,13 +1,28 @@
 import re
 import warnings
 import os
+import time
 import numpy as np
 import pandas as pd
 import requests as rs
 import json as json_lib
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from wsba_hockey.tools.globals import *
+from wsba_hockey.tools.globals import (
+    COL_MAP,
+    DEFAULT_ROSTER,
+    EDGE_CAT,
+    EVENTS,
+    FENWICK_EVENTS,
+    PBP_COLS,
+    POS_BASE_PROB,
+    SHOT_TYPES,
+    STRENGTHS,
+    convert_to_seconds,
+    get_contents,
+    get_soup,
+    get_team,
+)
 warnings.filterwarnings('ignore')
 
 ### SCRAPING FUNCTIONS ###
@@ -49,6 +64,124 @@ def adjust_coords(pbp):
     pbp['y_fixed'] = np.where(pbp['x_adj']<0,pbp['y_adj']*-1,pbp['y_adj'])
 
     #Return: pbp with adjiusted coordinates
+    return pbp
+
+
+def fix_players(pbp):
+    # Add/fix player info for shooters and goaltenders.
+    try:
+        find = pbp.loc[
+            (pbp['event_type'].isin(FENWICK_EVENTS)) & (pbp['event_player_1_hand'].isna()),
+            'event_player_1_id'
+        ].drop_duplicates().to_list()
+    except Exception:
+        find = pbp['event_player_1_id'].drop_duplicates().to_list()
+
+    roster = pd.read_csv(DEFAULT_ROSTER)
+    roster = roster.loc[
+        roster['player_id'].isin(find)
+    ].drop_duplicates(['player_id'])[['player_name', 'player_id', 'position', 'handedness']]
+
+    if find:
+        print('Adding player info to pbp...')
+
+        missing = pbp.loc[
+            (
+                (pbp['event_player_1_id'].isin(find)) &
+                (~pbp['event_player_1_id'].isin(roster['player_id']))
+            ),
+            'event_player_1_id'
+        ].drop_duplicates().dropna().to_list()
+        if missing:
+            from wsba_hockey.wsba_main import nhl_scrape_player_info
+
+            add = nhl_scrape_player_info(missing)[['player_name', 'player_id', 'handedness']]
+            roster = pd.concat([roster, add]).reset_index(drop=True)
+
+        roster['player_id'] = roster['player_id'].astype('Int64')
+        hand_dict = roster.set_index('player_id').to_dict()['handedness']
+
+        pbp['event_goalie_id'] = np.where(
+            pbp['event_team_venue'] == 'away',
+            pbp['home_goalie_id'],
+            pbp['away_goalie_id']
+        )
+        pbp['event_player_1_hand'] = (
+            pbp['event_player_1_id'].astype('Int64').map(hand_dict).where(lambda x: x.notna(), None)
+        )
+
+    return pbp
+
+
+def apply_passing_imputation(pbp):
+    # Estimate player passing/setting impacts on shot attempts.
+    goals = pbp['event_type'] == 'goal'
+    non_goals = pbp['event_type'].isin(FENWICK_EVENTS) & (pbp['event_type'] != 'goal')
+
+    for venue in ['away', 'home']:
+        team_mask = pbp['event_team_venue'] == venue
+        player_cols = [f'{venue}_on_{j}_id' for j in range(1, 7)]
+        pos_cols = [f'{venue}_on_{j}_pos' for j in range(1, 7)]
+        prob_cols = {
+            'primary': [f'{venue}_on_{j}_primary_fenwick_assist_probability' for j in range(1, 7)],
+            'secondary': [f'{venue}_on_{j}_secondary_fenwick_assist_probability' for j in range(1, 7)],
+            'tertiary': [f'{venue}_on_{j}_tertiary_fenwick_assist_probability' for j in range(1, 7)]
+        }
+
+        for assist_type in prob_cols:
+            pbp[prob_cols[assist_type]] = 0.0
+
+        goal_team_mask = team_mask & goals
+        for j in range(1, 7):
+            player_col = f'{venue}_on_{j}_id'
+            is_primary_assist = pbp[player_col] == pbp['event_player_2_id']
+            is_secondary_assist = pbp[player_col] == pbp['event_player_3_id']
+
+            pbp.loc[goal_team_mask & is_primary_assist, f'{venue}_on_{j}_primary_fenwick_assist_probability'] = 1.0
+            pbp.loc[goal_team_mask & is_secondary_assist, f'{venue}_on_{j}_secondary_fenwick_assist_probability'] = 1.0
+
+        if goal_team_mask.any():
+            goal_indices = pbp.index[goal_team_mask]
+            goal_on_ice_ids = pbp.loc[goal_indices, player_cols].values
+            goal_on_ice_pos = pbp.loc[goal_indices, pos_cols].values
+            tertiary_probs_goals = np.vectorize(
+                lambda pos: POS_BASE_PROB['tertiary'].get(pos, 0)
+            )(goal_on_ice_pos)
+
+            goal_player_1 = pbp.loc[goal_indices, 'event_player_1_id'].values[:, None]
+            goal_player_2 = pbp.loc[goal_indices, 'event_player_2_id'].values[:, None]
+            goal_player_3 = pbp.loc[goal_indices, 'event_player_3_id'].values[:, None]
+            involved_mask = (
+                (goal_on_ice_ids == goal_player_1) |
+                (goal_on_ice_ids == goal_player_2) |
+                (goal_on_ice_ids == goal_player_3)
+            )
+            tertiary_probs_goals[involved_mask] = 0
+            tertiary_sums = tertiary_probs_goals.sum(axis=1, keepdims=True)
+            tertiary_sums[tertiary_sums == 0] = 1
+            tertiary_probs_goals = (tertiary_probs_goals / tertiary_sums) * 0.8
+            pbp.loc[goal_indices, prob_cols['tertiary']] = tertiary_probs_goals
+
+        if non_goals.any():
+            non_goal_team_mask = team_mask & non_goals
+            non_goal_indices = pbp.index[non_goal_team_mask]
+            on_ice_ids = pbp.loc[non_goal_indices, player_cols].values
+            on_ice_pos = pbp.loc[non_goal_indices, pos_cols].values
+            shooter_ids = pbp.loc[non_goal_indices, 'event_player_1_id'].values[:, None]
+
+            probs = {}
+            for assist_type in ['primary', 'secondary', 'tertiary']:
+                probs[assist_type] = np.vectorize(
+                    lambda pos: POS_BASE_PROB[assist_type].get(pos, 0)
+                )(on_ice_pos)
+                probs[assist_type][on_ice_ids == shooter_ids] = 0
+                sums = probs[assist_type].sum(axis=1, keepdims=True)
+                sums[sums == 0] = 1
+                probs[assist_type] = (probs[assist_type] / sums) * 0.8
+
+            for assist_type in ['primary', 'secondary', 'tertiary']:
+                pbp.loc[non_goal_indices, prob_cols[assist_type]] = probs[assist_type]
+
     return pbp
 
 ## JSON FUNCTIONS ##

@@ -2,18 +2,60 @@ import os
 import random
 import matplotlib
 import requests as rs
+import numpy as np
 import pandas as pd
 import matplotlib
 import datetime as dt
+import time
 from numbers import Integral
 from typing import Literal, Union
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from wsba_hockey.tools.scraping import *
-from wsba_hockey.tools.xg_model import *
-from wsba_hockey.tools.agg import *
-from wsba_hockey.tools.plotting import *
-from wsba_hockey.tools.globals import *
+from wsba_hockey.tools.scraping import (
+    combine_data,
+    edge_stat_entry,
+    get_game_info,
+    parse_game_roster,
+)
+from wsba_hockey.tools.agg import (
+    apply_params,
+    apply_rosters,
+    calc_goalie,
+    calc_indv,
+    calc_onice,
+    calc_team,
+    concat_col_values,
+    extra_calc,
+    rank_stats,
+    sum_unique_games,
+)
+from wsba_hockey.tools.plotting import (
+    apply_primary_colors,
+    load_teaminfo,
+    plot_events,
+    team_primary_color_map,
+)
+from wsba_hockey.tools.xg_model import nhl_apply_xG
+from wsba_hockey.tools.globals import (
+    BIO_STAT_COL,
+    COL_MAP,
+    DEFAULT_AGG,
+    DEFAULT_ROSTER,
+    DRAFT_CAT,
+    EVENTS,
+    EVENT_MARKERS,
+    FENWICK_EVENTS,
+    FRONT_COL,
+    INFO_PATH,
+    KNOWN_PROBS,
+    NON_TOTALS,
+    SCHEDULE_PATH,
+    SHOT_TYPES,
+    STANDINGS_COLS,
+    STATS_SORT,
+    STRENGTHS,
+    TEAMS,
+)
 
 ### WSBA HOCKEY ###
 ## Provided below are all integral functions in the WSBA Hockey Python package. ##
@@ -459,8 +501,12 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
         for season in arg:
             api = f"https://api-web.nhle.com/v1/playoff-bracket/{season}"
 
-            data = rs.get(api).json()['series']
-            dfs.append(pd.json_normalize(data))
+            try:
+                data = rs.get(api).json()['series']
+                dfs.append(pd.json_normalize(data))
+            except Exception as e:
+                print(f"Error scraping playoff bracket for season {season}: {e}")
+                dfs.append(pd.DataFrame())
 
         #Combine and standardize columns
         df = pd.concat(dfs).rename(columns=COL_MAP['standings'])
@@ -503,8 +549,12 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
                 
             api = f"https://api-web.nhle.com/v1/standings/{end}"
 
-            data = rs.get(api).json()['standings']
-            dfs.append(pd.json_normalize(data))
+            try:
+                data = rs.get(api).json()['standings']
+                dfs.append(pd.json_normalize(data))
+            except Exception as e:
+                print(f"Error scraping standings for date {end}: {e}")
+                dfs.append(pd.DataFrame())
 
         #Standardize columns
         df = pd.concat(dfs).rename(columns=COL_MAP['standings'])
@@ -568,7 +618,7 @@ def nhl_scrape_game_roster(game_ids: int | list[int]) -> pd.DataFrame:
         return pd.DataFrame()
 
     #Add team abbreviations
-    rosters['team_abbr'] = rosters['team_id'].replace(wsba.TEAMS)
+    rosters['team_abbr'] = rosters['team_id'].replace(TEAMS)
 
     #Print final message
     if errors:
@@ -915,33 +965,6 @@ def nhl_scrape_seasons(analytic: bool = False) -> pd.DataFrame:
 
     return data
 
-def nhl_apply_xG(pbp: pd.DataFrame) -> pd.DataFrame:
-    """
-    Given play-by-play data, return this data with xG-related columns
-    Args:
-        pbp (pd.DataFrame):
-            A DataFrame containing play-by-play data generated within the WBSA Hockey package.
-    Returns:
-        pd.DataFrame: 
-            A DataFrame containing input play-by-play data with xG column.
-    """
-
-    print(f'Applying WSBA xG to model with seasons: {pbp['season'].drop_duplicates().to_list()}')
-
-    #Split the provided play-by-play dataframe into shots before 2023 and shots after
-    #Two different xG models are used due to some of the significant tracking changes the NHL has undergone since 2023.
-    legacy = pbp.loc[pbp['season']<20232024]
-    modern = pbp.loc[pbp['season']>=20232024]
-
-    #Apply xG model
-    pbp = pd.concat([
-        wsba_xG(
-            df,
-            model_path = os.path.join(pre_dir, XG_MODEL)
-        ) for pre_dir, df in [('legacy', legacy), ('', modern)] if not df.empty
-    ])
-    
-    return pbp
 
 def nhl_calculate_stats(
         pbp:pd.DataFrame, 
@@ -1489,13 +1512,13 @@ def nhl_plot_events(
 
     return results
 
-def repo_load_rosters(seasons:list[int] = []) -> pd.DataFrame:
+def repo_load_rosters(seasons: int | list[int] | None = None) -> pd.DataFrame:
     """
     Returns roster data from repository
 
     Args:
-        seasons (list[int], optional):
-            A DataFrame containing play-by-play event data.
+        seasons (int | list[int] | None, optional):
+            Season or seasons to return. If None, all repository roster data is returned.
 
     Returns:
         pd.DataFrame:
@@ -1506,18 +1529,18 @@ def repo_load_rosters(seasons:list[int] = []) -> pd.DataFrame:
         seasons = [seasons]
         
     data = pd.read_csv(DEFAULT_ROSTER)
-    if not seasons:
+    if seasons:
         data = data.loc[data['season'].isin(seasons)]
 
     return data
 
-def repo_load_schedule(seasons:list[int] = []) -> pd.DataFrame:
+def repo_load_schedule(seasons: int | list[int] | None = None) -> pd.DataFrame:
     """
     Returns schedule data from repository
 
     Args:
-        seasons (list[int], optional):
-            A DataFrame containing play-by-play event data.
+        seasons (int | list[int] | None, optional):
+            Season or seasons to return. If None, all repository schedule data is returned.
 
     Returns:
         pd.DataFrame:
@@ -1527,7 +1550,7 @@ def repo_load_schedule(seasons:list[int] = []) -> pd.DataFrame:
     if isinstance(seasons, int):
         seasons = [seasons]
 
-    data = pd.read_csv(SCHEDULE_PATH)
+    data = pd.read_csv(SCHEDULE_PATH, low_memory=False)
     if seasons:
         data = data.loc[data['season'].isin(seasons)]
 

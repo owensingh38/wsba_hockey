@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath("../../src"))
 project = 'wsba_hockey'
 copyright = '2026, Owen Singh'
 author = 'Owen Singh'
-release = '1.5.0'
+release = '1.6.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -34,6 +34,14 @@ autodoc_default_options = {
     "show-inheritance": True,
 }
 
+autodoc_mock_imports = [
+    # Heavy/compiled or optional runtime deps that may not be available in CI.
+    "xgboost",
+    "scipy",
+    "sklearn",
+    "hockey_rink",
+    "PIL",
+]
 
 
 # -- Options for HTML output -------------------------------------------------

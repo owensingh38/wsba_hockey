@@ -1,8 +1,18 @@
 import json
 import pandas as pd
 import numpy as np
-from wsba_hockey.tools.xg_model import *
-from wsba_hockey.tools.globals import *
+from wsba_hockey.tools.globals import (
+    AGG_POST_METRICS,
+    BIO_STAT_COL,
+    FENWICK_EVENTS,
+    NON_FINAL_STATES,
+    NON_TOTALS,
+    OPS,
+    PER_SIXTY,
+    SHOT_TYPES,
+    SPECIAL_KEYS,
+    STRENGTH_MATCH,
+)
 
 ## AGGREGATE FUNCTIONS ##
 # Provided in this file are functions vital to aggregating NHL play-by-play data into a wealth of statistics.

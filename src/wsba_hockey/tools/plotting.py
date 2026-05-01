@@ -2,13 +2,13 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import wsba_hockey.wsba_main as wsba
 from pathlib import Path
 from functools import lru_cache
+from matplotlib.lines import Line2D
 from matplotlib.colors import LinearSegmentedColormap
 from hockey_rink import NHLRink, CircularImage
 from scipy.ndimage import gaussian_filter
-from wsba_hockey.tools.globals import *
+from wsba_hockey.tools.globals import EVENT_MARKERS, IMG_PATH, INFO_PATH, METRIC_EVENTS, STRENGTHS
 
 ## PLOTTING ##
 # Functions to assist event plotting 
@@ -16,10 +16,10 @@ from wsba_hockey.tools.globals import *
 def wsba_rink(display_range: str = "offense", rotation: int | None = 0, ax=None, figsize=(10, 12)):
     logo_image = None
     try:
-        if isinstance(wsba.IMG_PATH, str) and Path(wsba.IMG_PATH).exists():
+        if isinstance(IMG_PATH, str) and Path(IMG_PATH).exists():
             from PIL import Image
 
-            logo_image = np.array(Image.open(wsba.IMG_PATH))
+            logo_image = np.array(Image.open(IMG_PATH))
     except Exception:
         logo_image = None
 
@@ -93,6 +93,127 @@ def team_primary_color_map(teaminfo: pd.DataFrame | None = None, *, info_path: s
     return dict(zip(teaminfo["wsba_id"].astype(str), teaminfo["primary_color"].astype(str)))
 
 
+def _legend_handles(events: list[str], marker_dict: dict) -> list[Line2D]:
+    return [
+        Line2D(
+            [0],
+            [0],
+            marker=marker_dict.get(event, "o"),
+            linestyle="None",
+            label=event,
+            markersize=8,
+            markerfacecolor="#1f77b4",
+            markeredgecolor="black" if event == "goal" else "white",
+            markeredgewidth=0.75,
+        )
+        for event in events
+    ]
+
+
+def _horizontal_legend_columns(handle_count: int) -> int:
+    return max(1, min(handle_count, 5))
+
+
+def _vertical_legend_columns(handle_count: int) -> int:
+    return max(1, int(np.ceil(handle_count / 5)))
+
+
+def _add_below_rink_legend(plotter: WSBAPlot, handles: list[Line2D]) -> None:
+    fig = plotter.fig
+    w_in, h_in = fig.get_size_inches()
+    pos = plotter.rink_ax.get_position()
+
+    ncol = _horizontal_legend_columns(len(handles))
+    rows = int(np.ceil(len(handles) / ncol))
+    legend_h_in = 0.28 * rows + 0.18
+    gap_in = 0.08
+    extra_in = legend_h_in + gap_in
+
+    # Increase canvas height to make room for legend without shrinking the rink.
+    new_h_in = h_in + extra_in
+    fig.set_size_inches(w_in, new_h_in, forward=True)
+
+    # Keep rink size (in inches) and top margin constant by shifting axes up.
+    axes_h_in = pos.height * h_in
+    axes_y0_in = pos.y0 * h_in
+    new_y0 = (axes_y0_in + extra_in) / new_h_in
+    new_h = axes_h_in / new_h_in
+    new_pos = [pos.x0, new_y0, pos.width, new_h]
+    plotter.rink_ax.set_position(new_pos)
+    plotter.ax.set_position(new_pos)
+
+    center_x = new_pos[0] + (new_pos[2] / 2.0)
+    anchor_y = new_pos[1] - (gap_in / new_h_in)
+
+    leg = fig.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(center_x, anchor_y),
+        bbox_transform=fig.transFigure,
+        ncol=ncol,
+        frameon=True,
+        framealpha=0.95,
+        facecolor="white",
+        edgecolor="black",
+        handletextpad=0.6,
+        columnspacing=1.0,
+        fontsize=9,
+    )
+    if leg is not None:
+        leg.set_zorder(1000)
+
+
+def _add_on_rink_legend(plotter: WSBAPlot, handles: list[Line2D], display_range: str) -> None:
+    ax = plotter.ax
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    display = str(display_range).lower()
+
+    if display == "full":
+        anchor = (0, 0)
+    else:
+        # For vertical half-rinks, put the legend in the neutral-zone lane between
+        # the red line and blue line, opposite the net.
+        y_mid = (ylim[0] + ylim[1]) / 2.0
+        y_anchor = 12.5 if y_mid > 0 else -12.5
+        anchor = ((xlim[0] + xlim[1]) / 2.0, y_anchor)
+
+    leg = ax.legend(
+        handles=handles,
+        loc="center",
+        bbox_to_anchor=anchor,
+        bbox_transform=ax.transData,
+        ncol=_vertical_legend_columns(len(handles)),
+        frameon=True,
+        framealpha=0.95,
+        facecolor="white",
+        edgecolor="black",
+        borderpad=0.45,
+        handletextpad=0.55,
+        labelspacing=0.35,
+        fontsize=8,
+    )
+    if leg is not None:
+        leg.set_zorder(1000)
+
+
+def _add_event_legend(
+    plotter: WSBAPlot,
+    events: list[str],
+    marker_dict: dict,
+    display_range: str,
+    rotation: int | None,
+) -> None:
+    handles = _legend_handles(events, marker_dict)
+    rot = 0 if rotation is None else int(rotation)
+    is_vertical = abs(rot) % 180 == 90
+
+    if is_vertical:
+        _add_on_rink_legend(plotter, handles, display_range)
+    else:
+        _add_below_rink_legend(plotter, handles)
+
+
 def apply_primary_colors(
     df: pd.DataFrame,
     color_map: dict[str, str],
@@ -122,7 +243,7 @@ def plot_events(
     rotation: int | None = 0,
     figsize=(6.4, 4.8),
 ):
-    marker_dict = wsba.EVENT_MARKERS if marker_dict is None else marker_dict
+    marker_dict = EVENT_MARKERS if marker_dict is None else marker_dict
 
     plotter = WSBAPlot(display_range=display_range, rotation=rotation, figsize=figsize)
     ax = plotter.ax
@@ -149,6 +270,8 @@ def plot_events(
         theta = np.deg2rad(rot)
         cos_t = np.cos(theta)
         sin_t = np.sin(theta)
+
+    plotted_events: list[str] = []
 
     for event in events:
         event_mask = event_type_arr == event
@@ -190,14 +313,13 @@ def plot_events(
             label=event,
             zorder=5,
         )
+        plotted_events.append(event)
 
     if title:
         ax.set_title(title)
 
-    leg = ax.legend()
-    if leg is not None:
-        leg.set_visible(legend)
-        leg.set_zorder(1000)
+    if legend and plotted_events:
+        _add_event_legend(plotter, plotted_events, marker_dict, display_range, rotation)
 
     return plotter.fig
 
@@ -208,7 +330,7 @@ def _as_list(value):
 
 def _normalize_strengths(strengths):
     if strengths == "all":
-        return wsba.STRENGTHS
+        return STRENGTHS
     if isinstance(strengths, str):
         return [strengths]
     return strengths
@@ -217,12 +339,14 @@ def prep_plot_data(
     pbp,
     strengths,
     season_types=2,
-    marker_dict=wsba.EVENT_MARKERS
+    marker_dict=EVENT_MARKERS
 ):
     try:
         pbp["xG"]
     except Exception:
-        pbp = wsba.wsba_xG(pbp)
+        from wsba_hockey.wsba_main import nhl_apply_xG
+
+        pbp = nhl_apply_xG(pbp)
         pbp["xG"] = np.where(pbp["xG"].isna(), 0, pbp["xG"])
 
     pbp["x_plot"] = np.where(pbp["x_adj"] < 0, -pbp["y_adj"], pbp["y_adj"])
@@ -253,9 +377,9 @@ def prep_plot_data(
         ]
 
     pbp["is_goal"] = (pbp["event_type"] == "goal").astype(int)
-    pbp["is_shot"] = pbp["event_type"].isin(wsba.METRIC_EVENTS["Shots"]).astype(int)
-    pbp["is_fenwick"] = pbp["event_type"].isin(wsba.METRIC_EVENTS["Fenwick"]).astype(int)
-    pbp["is_corsi"] = pbp["event_type"].isin(wsba.METRIC_EVENTS["Corsi"]).astype(int)
+    pbp["is_shot"] = pbp["event_type"].isin(METRIC_EVENTS["Shots"]).astype(int)
+    pbp["is_fenwick"] = pbp["event_type"].isin(METRIC_EVENTS["Fenwick"]).astype(int)
+    pbp["is_corsi"] = pbp["event_type"].isin(METRIC_EVENTS["Corsi"]).astype(int)
     pbp["is_give"] = (pbp["event_type"] == "giveaway").astype(int)
     pbp["is_take"] = (pbp["event_type"] == "takeaway").astype(int)
     pbp["is_penalty"] = (pbp["event_type"] == "penalty").astype(int)

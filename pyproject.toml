@@ -8,7 +8,7 @@ version = "1.6.0"
 authors = [
   { name="Owen Singh", email="owenbksingh@gmail.com" },
 ]
-description = "WeakSide Breakout's complete Python package of access to hockey data, primairly including the scraping of National Hockey League schedule, play-by-play, and shifts information."
+description = "WeakSide Breakout's Python package for hockey data, primarily including National Hockey League schedule, play-by-play, roster, standings, and shift information."
 dependencies = [
     "numpy>=1.23",
     "pandas>=2.0",
@@ -37,6 +37,20 @@ Documentation = "https://weakside-breakout-analysis.github.io/wsba_hockey/"
 [tool.setuptools]
 include-package-data = true
 
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["wsba_hockey.tools.legacy*"]
+
+[tool.setuptools.package-data]
+wsba_hockey = [
+    "tools/rosters/*.csv",
+    "tools/schedule/*.csv",
+    "tools/teaminfo/*.csv",
+    "tools/utils/*.png",
+    "xg_model/*.json",
+    "xg_model/legacy/*.json",
+]
+
 [tool.setuptools.exclude-package-data]
 wsba_hockey = [
     "api/*",
@@ -46,7 +60,14 @@ wsba_hockey = [
     "stats/*",
     "evidence/*",
     "flask/*",
+    "tools/legacy/*",
+    "tools/legacy/**",
     "__pycache__/*",
     "_vscode/*",
     ".gitattributes"
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
