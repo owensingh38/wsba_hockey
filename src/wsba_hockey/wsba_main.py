@@ -288,7 +288,8 @@ def nhl_scrape_schedule(
         date_string = 'now' if now else str(inc)[:10]
 
         #For each day, call NHL api and retreive info on all games of selected game
-        print(f'Scraping games {'as of' if now else 'on'} {date_string}...')
+        date_context = 'as of' if now else 'on'
+        print(f'Scraping games {date_context} {date_string}...')
         
         get = rs.get(f'{api}{date_string}').json()
         game_week = pd.json_normalize(get['games']).drop(columns=['goals'],errors='ignore')
