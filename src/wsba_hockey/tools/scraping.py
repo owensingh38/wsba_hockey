@@ -341,7 +341,8 @@ def parse_json(info):
 
     #Return error if game is set in the future
     if info['game_state'] == 'FUT':
-        raise ValueError(f"Game {info['id'][0]} has not occured yet.")
+        game_id = info['id'][0]
+        raise ValueError(f"Game {game_id} has not occured yet.")
     
     #Test columns
     cols = ['eventId', 'timeInPeriod', 'timeRemaining', 'situationCode', 'homeTeamDefendingSide', 'typeCode', 'typeDescKey', 'sortOrder', 'periodDescriptor.number', 'periodDescriptor.periodType', 'periodDescriptor.maxRegulationPeriods', 'details.eventOwnerTeamId', 'details.losingPlayerId', 'details.winningPlayerId', 'details.xCoord', 'details.yCoord', 'details.zoneCode', 'pptReplayUrl', 'details.shotType', 'details.scoringPlayerId', 'details.scoringPlayerTotal', 'details.assist1PlayerId', 'details.assist1PlayerTotal', 'details.assist2PlayerId', 'details.assist2PlayerTotal', 'details.goalieInNetId', 'details.awayScore', 'details.homeScore', 'details.highlightClipSharingUrl', 'details.highlightClipSharingUrlFr', 'details.highlightClip', 'details.highlightClipFr', 'details.discreteClip', 'details.discreteClipFr', 'details.shootingPlayerId', 'details.awaySOG', 'details.homeSOG', 'details.playerId', 'details.hittingPlayerId', 'details.hitteePlayerId', 'details.reason', 'details.typeCode', 'details.descKey', 'details.duration', 'details.servedByPlayerId', 'details.secondaryReason', 'details.blockingPlayerId', 'details.committedByPlayerId', 'details.drawnByPlayerId', 'game_id', 'season', 'season_type', 'game_date']
@@ -410,7 +411,8 @@ def parse_json(info):
         try:
             events = adjust_coords(events)
         except KeyError:
-            print(f"No coordinates found for game {info['game_id'][0]}...")
+            game_id = info['game_id'][0]
+            print(f"No coordinates found for game {game_id}...")
             events['x_adj'] = np.nan
             events['y_adj'] = np.nan
             events['event_distance'] = np.nan
@@ -921,16 +923,18 @@ def combine_pbp(info,sources):
         espn_pbp = pd.merge(espn_pbp,json_pbp,how='left').drop_duplicates(subset='index')
 
         if sources:
-            dirs_html = f'sources/{info['season']}/HTML/'
-            dirs_json = f'sources/{info['season']}/JSON/'
+            source_season = info['season']
+            source_game_id = info['game_id']
+            dirs_html = f"sources/{source_season}/HTML/"
+            dirs_json = f"sources/{source_season}/JSON/"
 
             if not os.path.exists(dirs_html):
                 os.makedirs(dirs_html)
             if not os.path.exists(dirs_json):
                 os.makedirs(dirs_json)
 
-            html_pbp.to_csv(f'{dirs_html}{info['game_id']}_HTML.csv',index=False)
-            espn_pbp.to_csv(f'{dirs_json}{info['game_id']}_JSON.csv',index=False)
+            html_pbp.to_csv(f"{dirs_html}{source_game_id}_HTML.csv",index=False)
+            espn_pbp.to_csv(f"{dirs_json}{source_game_id}_JSON.csv",index=False)
 
         print(f' merging on columns...',end="")
         #Merge pbp
@@ -939,16 +943,18 @@ def combine_pbp(info,sources):
     else:
         #JSON x HTML
         if sources:
-            dirs_html = f'sources/{info['season']}/HTML/'
-            dirs_json = f'sources/{info['season']}/JSON/'
+            source_season = info['season']
+            source_game_id = info['game_id']
+            dirs_html = f"sources/{source_season}/HTML/"
+            dirs_json = f"sources/{source_season}/JSON/"
 
             if not os.path.exists(dirs_html):
                 os.makedirs(dirs_html)
             if not os.path.exists(dirs_json):
                 os.makedirs(dirs_json)
 
-            html_pbp.to_csv(f'{dirs_html}{info['game_id']}_HTML.csv',index=False)
-            json_pbp.to_csv(f'{dirs_json}{info['game_id']}_JSON.csv',index=False)
+            html_pbp.to_csv(f"{dirs_html}{source_game_id}_HTML.csv",index=False)
+            json_pbp.to_csv(f"{dirs_json}{source_game_id}_JSON.csv",index=False)
 
         #Assign target numbers
         html_pbp = assign_target(html_pbp)
@@ -1275,12 +1281,14 @@ def combine_shifts(info,sources):
     
     #Export sources if true
     if sources:
-        dirs = f'sources/{info['season']}/SHIFTS/'
+        source_season = info['season']
+        source_game_id = info['game_id']
+        dirs = f"sources/{source_season}/SHIFTS/"
 
         if not os.path.exists(dirs):
             os.makedirs(dirs)
 
-        full_shifts.to_csv(f'{dirs}{info['game_id']}_SHIFTS.csv',index=False)
+        full_shifts.to_csv(f"{dirs}{source_game_id}_SHIFTS.csv",index=False)
 
     #Return: full shifts data converted to play-by-play format
     return full_shifts

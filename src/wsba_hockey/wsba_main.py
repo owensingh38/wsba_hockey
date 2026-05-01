@@ -167,12 +167,14 @@ def nhl_scrape_game(
             
             #Export if sources is true
             if sources:
-                dirs = f'sources/{info['season']}/'
+                source_season = info['season']
+                source_game_id = info['game_id']
+                dirs = f"sources/{source_season}/"
 
                 if not os.path.exists(dirs):
                     os.makedirs(dirs)
 
-                data.to_csv(f'{dirs}{info['game_id']}.csv',index=False)
+                data.to_csv(f"{dirs}{source_game_id}.csv",index=False)
 
             print(f" finished in {secs:.2f} seconds. {prog}/{len(game_ids)} ({(prog/len(game_ids))*100:.2f}%)")
         except Exception as e:
@@ -1001,10 +1003,13 @@ def nhl_calculate_stats(
 
     seasons = pbp['season'].drop_duplicates().dropna().astype(int)
    
-    print(f'''Calculating statistics for {'regular season' if season_types == 2 else
-                                            'playoff' if season_types == 3 else
-                                            'regular season and playoff' if season_types == [2,3] else
-                                            'unknown selection of'} games in the provided play-by-play data at {game_strength} for {group}s...\nSeasons included: {seasons.to_list()}...'''
+    season_type_label = (
+        'regular season' if season_types == 2 else
+        'playoff' if season_types == 3 else
+        'regular season and playoff' if season_types == [2, 3] else
+        'unknown selection of'
+    )
+    print(f'''Calculating statistics for {season_type_label} games in the provided play-by-play data at {game_strength} for {group}s...\nSeasons included: {seasons.to_list()}...'''
     )
     start = time.perf_counter()
 
@@ -1382,15 +1387,15 @@ def nhl_plot_events(
             away_row = away_rows.iloc[0] if not away_rows.empty else None
             home_row = home_rows.iloc[0] if not home_rows.empty else None
 
-            away_color_raw = (
-                away_row[f"{team_colors['away']}_color"] if away_row is not None and f"{team_colors['away']}_color" in away_row else '#1f77b4'
-            )
+            away_color_type = team_colors['away']
+            home_color_type = team_colors['home']
+            away_color_key = f"{away_color_type}_color"
+            home_color_key = f"{home_color_type}_color"
+            away_color_raw = away_row[away_color_key] if away_row is not None and away_color_key in away_row else '#1f77b4'
             away_color = (
-                '#000000' if away_row is not None and team_colors['away'] == 'secondary' and away_row.get('secondary_color') == '#FFFFFF' else away_color_raw
+                '#000000' if away_row is not None and away_color_type == 'secondary' and away_row.get('secondary_color') == '#FFFFFF' else away_color_raw
             )
-            home_color = (
-                home_row[f"{team_colors['home']}_color"] if home_row is not None and f"{team_colors['home']}_color" in home_row else '#d62728'
-            )
+            home_color = home_row[home_color_key] if home_row is not None and home_color_key in home_row else '#d62728'
 
             game_rows = game_rows.copy()
             game_rows['color'] = np.where(game_rows['event_team_abbr'] == away_abbr, away_color, home_color)

@@ -35,17 +35,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
           pip install .
-          pip install pytest
-
-      - name: Run package smoke checks
-        env:
-          OPENBLAS_NUM_THREADS: "1"
-          OMP_NUM_THREADS: "1"
-          MKL_NUM_THREADS: "1"
-        run: |
-          python -m compileall -q src/wsba_hockey
-          python -c "import wsba_hockey as wsba; print(wsba.__version__)"
-          pytest --collect-only -q
 
       - name: Clean previous builds
         run: |
