@@ -1018,9 +1018,7 @@ def nhl_calculate_stats(
     start = time.perf_counter()
 
     #Check if xG column exists and apply model if it does not
-    try:
-        pbp['xG']
-    except KeyError: 
+    if 'xG' not in pbp.columns:
         print('Applying xG model...')
         pbp = nhl_apply_xG(pbp)
     
@@ -1035,7 +1033,9 @@ def nhl_calculate_stats(
 
     #Convert all columns with player ids to float in order to avoid merging errors
     id_cols = [col for col in pbp.columns if '_id' in col]
-    pbp[id_cols] = pbp[id_cols].apply(pd.to_numeric)
+    for col in id_cols:
+        if not pd.api.types.is_numeric_dtype(pbp[col]):
+            pbp[col] = pd.to_numeric(pbp[col], errors='coerce')
 
     second_group = ['season', 'game_id']
 

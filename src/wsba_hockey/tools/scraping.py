@@ -12,12 +12,9 @@ from wsba_hockey.tools.globals import (
     COL_MAP,
     DEFAULT_ROSTER,
     EDGE_CAT,
-    EVENTS,
     FENWICK_EVENTS,
     PBP_COLS,
     POS_BASE_PROB,
-    SHOT_TYPES,
-    STRENGTHS,
     convert_to_seconds,
     get_contents,
     get_soup,
@@ -258,6 +255,12 @@ def get_game_info(game_id):
 
         # Right-rail content is missing for some games; preserve prior behavior (empty dict)
         coaches = {}
+        officials = {
+            'referee_1': None,
+            'referee_2': None,
+            'linesman_1': None,
+            'linesman_2': None
+        }
         try:
             rr_json = rr_future.result()
             game_info = rr_json.get('gameInfo', {})
@@ -265,8 +268,22 @@ def get_game_info(game_id):
             home = game_info.get('homeTeam', {}).get('headCoach', {}).get('default')
             if away and home:
                 coaches = {'away': away.upper(), 'home': home.upper()}
+            referees = game_info.get('referees', [])
+            linesmen = game_info.get('linesmen', [])
+            officials = {
+                'referee_1': referees[0].get('default') if len(referees) > 0 else None,
+                'referee_2': referees[1].get('default') if len(referees) > 1 else None,
+                'linesman_1': linesmen[0].get('default') if len(linesmen) > 0 else None,
+                'linesman_2': linesmen[1].get('default') if len(linesmen) > 1 else None
+            }
         except Exception:
             coaches = {}
+            officials = {
+                'referee_1': None,
+                'referee_2': None,
+                'linesman_1': None,
+                'linesman_2': None
+            }
 
     #Provide explicit error for games which have not yet occured
     if pbp_json['gameState'] in ['FUT', 'PRE']:
@@ -331,6 +348,7 @@ def get_game_info(game_id):
             'rosters':roster,
             'HTML_rosters':roster_dict,
             'coaches':coaches,
+            'officials':officials,
             'json_shifts':json_shifts}
 
 def parse_json(info):
@@ -749,6 +767,18 @@ def parse_html(info):
         event_rows.append(events_dict)
 
     data = pd.DataFrame(event_rows)
+    html_on_ice_cols = []
+    for venue in ['away', 'home']:
+        html_on_ice_cols.extend([f'{venue}_on_{i}' for i in range(1, 7)])
+        html_on_ice_cols.extend([f'{venue}_on_{i}_id' for i in range(1, 7)])
+        html_on_ice_cols.extend([f'{venue}_goalie', f'{venue}_goalie_id'])
+
+    for col in html_on_ice_cols:
+        if col not in data.columns:
+            data[col] = " "
+        else:
+            data[col] = data[col].fillna(" ")
+
     data['event_type'] = data['event_type'].replace({
         "PGSTR": "pre-game-start",
         "PGEND": "pre-game-end",
@@ -983,6 +1013,8 @@ def combine_pbp(info,sources):
     
     for col in info_col:
         df[col] = info[col]
+    for col, value in info.get('officials', {}).items():
+        df[col] = value
 
     #Fill period_type column and assign shifts a sub-500 event code
     df['period_type'] = np.where(df['period']<4,"REG",np.where(np.logical_and(df['period']==5,df['season_type']==2),"SO","OT"))
@@ -1371,6 +1403,9 @@ def combine_data(info,sources):
         df['away_coach'] = coaches['away']
         df['home_coach'] = coaches['home']
         df['event_coach'] = np.where(df['event_team_abbr']==df['home_team_abbr'],coaches['home'],np.where(df['event_team_abbr']==df['away_team_abbr'],coaches['away'],""))
+
+    for col, value in info.get('officials', {}).items():
+        df[col] = value
 
     #Fix event goalies
     df['event_goalie_id'] = np.where(df['event_team_venue']=='away',df['home_goalie_id'],df['away_goalie_id'])

@@ -655,7 +655,8 @@ PBP_COLS = [
     "home_on_1_id","home_on_2_id","home_on_3_id","home_on_4_id","home_on_5_id","home_on_6_id","home_goalie_id",
     "away_on_1_pos","away_on_2_pos","away_on_3_pos","away_on_4_pos","away_on_5_pos","away_on_6_pos",
     "home_on_1_pos","home_on_2_pos","home_on_3_pos","home_on_4_pos","home_on_5_pos","home_on_6_pos",
-    "event_coach","away_coach","home_coach"
+    "event_coach","away_coach","home_coach",
+    "referee_1","referee_2","linesman_1","linesman_2"
 ]
 
 CONVERT_SEASONS = {
@@ -894,7 +895,11 @@ CONTINUOUS = ['event_distance',
             'angle_from_last',
             'seconds_since_last',
             'speed_from_last',
-            'speed_of_angle_from_last'
+            'speed_of_angle_from_last',
+            'event_player_1_shift_time_on_ice',
+            'event_on_ice_against_min_shift_time_on_ice',
+            'event_on_ice_against_avg_shift_time_on_ice',
+            'event_on_ice_against_max_shift_time_on_ice'
             ]
 BOOLEAN = ['wrist',
         'deflected',
@@ -931,11 +936,8 @@ BOOLEAN = ['wrist',
         'strength_6v5',
         'empty_net',
         'offwing',
-        'rush',
-        'rebound',
         'short',
         'failed_bank',
-        'cross_ice'
     ]
 
 STRENGTH_MATCH = {

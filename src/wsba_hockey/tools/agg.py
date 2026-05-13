@@ -1,6 +1,7 @@
 import json
 import pandas as pd
 import numpy as np
+from functools import lru_cache
 from wsba_hockey.tools.globals import (
     AGG_POST_METRICS,
     BIO_STAT_COL,
@@ -22,6 +23,10 @@ shot_types = SHOT_TYPES
 fenwick_events = FENWICK_EVENTS
 strengths_list = STRENGTH_MATCH
 per_sixty = PER_SIXTY
+
+@lru_cache(maxsize=8)
+def _read_csv_cached(path):
+    return pd.read_csv(path)
 
 def process_stats(df, group, venue, game_strength, second_group):
     #Determine columns
@@ -502,7 +507,7 @@ def apply_rosters(df,group,schedule_path,roster_path):
 
     #Roster data for teams is result for each game
     if group == 'team':
-        schedule = pd.read_csv(schedule_path)
+        schedule = _read_csv_cached(schedule_path).copy()
         
         #Only want finished games for standing stats
         schedule = schedule.loc[~schedule['game_state'].isin(NON_FINAL_STATES)]
@@ -532,7 +537,7 @@ def apply_rosters(df,group,schedule_path,roster_path):
 
     else:
         #Import rosters and player info
-        rosters = pd.read_csv(roster_path)
+        rosters = _read_csv_cached(roster_path).copy()
         names = rosters[['player_id','player_name',
                             'headshot','position','handedness',
                             'height_in','weight_lbs',
