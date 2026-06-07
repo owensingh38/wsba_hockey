@@ -1,4 +1,5 @@
 import os
+import json as json_lib
 
 import numpy as np
 import pandas as pd
@@ -14,6 +15,16 @@ from wsba_hockey.tools.globals import (
     TARGET,
     XG_MODEL,
 )
+
+
+def _xg_model_features(model, model_path: str) -> list[str]:
+    feature_path = model_path.replace('.json', '_features.json')
+    if os.path.exists(feature_path):
+        with open(feature_path, 'r') as f:
+            return list(json_lib.load(f))
+    if model.feature_names:
+        return list(model.feature_names)
+    return CONTINUOUS + BOOLEAN
 
 
 def _prep_xg_data(pbp: pd.DataFrame) -> pd.DataFrame:
@@ -175,14 +186,18 @@ def _apply_xg_model(pbp: pd.DataFrame, model_path: str, states: bool = False) ->
         current_model_path = model_path.replace('wsba_xg.json', 'wsba_xg_en.json') if empty_net else model_path
         model = xgb.Booster()
         model.load_model(current_model_path)
+        features = _xg_model_features(model, current_model_path)
+        for feature in features:
+            if feature not in training.columns:
+                training[feature] = 0.0
 
-        data_sparse = sp.csr_matrix(training[[TARGET] + CONTINUOUS + BOOLEAN])
+        data_sparse = sp.csr_matrix(training[[TARGET] + features])
         is_goal_vect = data_sparse[:, 0].toarray()
         predictors = data_sparse[:, 1:]
         xgb_matrix = xgb.DMatrix(
             data=predictors,
             label=is_goal_vect,
-            feature_names=CONTINUOUS + BOOLEAN
+            feature_names=features
         )
         training['xG'] = model.predict(xgb_matrix)
         dfs.append(training)

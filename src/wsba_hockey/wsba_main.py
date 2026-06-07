@@ -1,7 +1,6 @@
 import os
 import random
 import matplotlib
-import requests as rs
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -11,6 +10,7 @@ from numbers import Integral
 from typing import Literal, Union
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.exceptions import JSONDecodeError
 from wsba_hockey.tools.scraping import (
     combine_data,
     edge_stat_entry,
@@ -36,6 +36,7 @@ from wsba_hockey.tools.plotting import (
     team_primary_color_map,
 )
 from wsba_hockey.tools.xg_model import nhl_apply_xG
+from wsba_hockey.tools.http import POOL_WORKERS, get as http_get, make_pooled_session
 from wsba_hockey.tools.globals import (
     BIO_STAT_COL,
     COL_MAP,
@@ -129,7 +130,7 @@ def nhl_scrape_game(
             rand_id = f'{rand_year}{rand_season_type:02d}{rand_game:04d}'
             try: 
                 #If game exists and has at least begun, then scraping can occur.
-                rand_data = rs.get(f"https://api-web.nhle.com/v1/gamecenter/{rand_id}/play-by-play").json()
+                rand_data = http_get(f"https://api-web.nhle.com/v1/gamecenter/{rand_id}/play-by-play").json()
                 if rand_data['gameState'] == 'FUT':
                     continue
                 else:
@@ -263,7 +264,7 @@ def nhl_scrape_schedule(
         #Set start and end to filler values to ensure only one date is scraped (the phrase 'now' will be appened pre-scrape)
         start = end = dt.datetime.now()
     else:
-        season_data = rs.get('https://api.nhle.com/stats/rest/en/season').json()['data']
+        season_data = http_get('https://api.nhle.com/stats/rest/en/season').json()['data']
         season_data = [s for s in season_data if s['id'] == int(season)][0]
 
         #Select start and end dates for scrape (if none are provided use the official season start and end dates)
@@ -291,7 +292,7 @@ def nhl_scrape_schedule(
         date_context = 'as of' if now else 'on'
         print(f'Scraping games {date_context} {date_string}...')
         
-        get = rs.get(f'{api}{date_string}').json()
+        get = http_get(f'{api}{date_string}').json()
         game_week = pd.json_normalize(get['games']).drop(columns=['goals'],errors='ignore')
         
         #Return nothing if there's nothing
@@ -381,7 +382,7 @@ def nhl_scrape_season(
             load = pd.read_csv(local_path)
             load['game_date'] = pd.to_datetime(load['game_date'])
             
-            season_data = rs.get('https://api.nhle.com/stats/rest/en/season').json()['data']
+            season_data = http_get('https://api.nhle.com/stats/rest/en/season').json()['data']
             season_data = [s for s in season_data if s['id'] == season][0]
 
             season_start = f'{(str(season)[0:4] if int(start[0:2])>=9 else str(season)[4:8])}-{start[0:2]}-{start[3:5]}' if start else season_data['startDate'][0:10]
@@ -451,8 +452,8 @@ def nhl_scrape_seasons_info(seasons:list[int] = []) -> pd.DataFrame:
     #Load two different data sources: general season info and standings data related to season
     api = "https://api.nhle.com/stats/rest/en/season"
     info = "https://api-web.nhle.com/v1/standings-season"
-    data = rs.get(api).json()['data']
-    data_2 = rs.get(info).json()['seasons']
+    data = http_get(api).json()['data']
+    data_2 = http_get(info).json()['seasons']
 
     df = pd.json_normalize(data)
     df_2 = pd.json_normalize(data_2)
@@ -505,7 +506,7 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
             api = f"https://api-web.nhle.com/v1/playoff-bracket/{season}"
 
             try:
-                data = rs.get(api).json()['series']
+                data = http_get(api).json()['series']
                 dfs.append(pd.json_normalize(data))
             except Exception as e:
                 print(f"Error scraping playoff bracket for season {season}: {e}")
@@ -535,7 +536,7 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
             #If the end is an int then its a season otherwise it is either 'now' or a date as a string
             if type(search) == int:
                 #Check if the season date is during the requested season - if so then use this date to find the current standings for the requested season
-                season_data = rs.get('https://api.nhle.com/stats/rest/en/season').json()['data']
+                season_data = http_get('https://api.nhle.com/stats/rest/en/season').json()['data']
                 season_data = [s for s in season_data if s['id'] == search][0]
                 
                 season_start = season_data['startDate']
@@ -553,7 +554,7 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
             api = f"https://api-web.nhle.com/v1/standings/{end}"
 
             try:
-                data = rs.get(api).json()['standings']
+                data = http_get(api).json()['standings']
                 dfs.append(pd.json_normalize(data))
             except Exception as e:
                 print(f"Error scraping standings for date {end}: {e}")
@@ -584,7 +585,7 @@ def nhl_scrape_game_roster(game_ids: int | list[int]) -> pd.DataFrame:
 
     #Prepare session to speed up requests
     global session
-    session = rs.Session()
+    session = make_pooled_session()
 
     #Helper function to quickly retrieve roster
     def fetch_roster(game, rest):
@@ -602,7 +603,7 @@ def nhl_scrape_game_roster(game_ids: int | list[int]) -> pd.DataFrame:
     errors = []
 
     dfs = []
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as ex:
         futures = {ex.submit(fetch_roster, g, 2): g for g in game_ids}
         for f in as_completed(futures):
             g = futures[f]
@@ -662,7 +663,7 @@ def nhl_scrape_roster(season: int, teams: str | list[str] | None = None) -> pd.D
             print(f'Scraping {team} roster...')
             api = f'https://api-web.nhle.com/v1/roster/{team}/{season}'
             
-            data = rs.get(api).json()
+            data = http_get(api).json()
             forwards = pd.json_normalize(data['forwards'])
             forwards['heading_position'] = "F"
             dmen = pd.json_normalize(data['defensemen'])
@@ -704,7 +705,7 @@ def nhl_scrape_prospects(team:str) -> pd.DataFrame:
 
     api = f'https://api-web.nhle.com/v1/prospects/{team}'
 
-    data = rs.get(api).json()
+    data = http_get(api).json()
 
     print(f'Scraping {team} prospects...')
 
@@ -738,7 +739,7 @@ def nhl_scrape_team_info(country:bool = False) -> pd.DataFrame:
     print(f'Scraping {info_type} information...')
     api = f'https://api.nhle.com/stats/rest/en/{info_type}'
     
-    data =  pd.json_normalize(rs.get(api).json()['data'])
+    data =  pd.json_normalize(http_get(api).json()['data'])
 
     #Add logos if necessary
     if not country:
@@ -769,7 +770,7 @@ def nhl_scrape_player_info(player_ids: list[int]) -> pd.DataFrame:
     #Wrap game_id in a list if only a single game_id is provided
     player_ids = [player_ids] if type(player_ids) != list else player_ids
 
-    session = rs.Session()
+    session = make_pooled_session()
 
     def fetch_player(player_id, rest):
         player_id = int(player_id)
@@ -781,11 +782,11 @@ def nhl_scrape_player_info(player_ids: list[int]) -> pd.DataFrame:
             data['player_name'] = (data['firstName.default'] + " " + data['lastName.default']).str.upper()
             time.sleep(rest)
             return data
-        except rs.JSONDecodeError:
+        except JSONDecodeError:
             return None
 
     infos = []
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as executor:
         infos = list(executor.map(lambda pid: fetch_player(pid, 1), player_ids))
 
     session.close()
@@ -820,7 +821,7 @@ def nhl_scrape_draft_rankings(arg:str | Literal['now'] = 'now', category:int = 0
 
     #Player category only applies when requesting a specific season
     api = f"https://api-web.nhle.com/v1/draft/rankings/{arg}/{category}" if category > 0 else f"https://api-web.nhle.com/v1/draft/rankings/{arg}"
-    data = pd.json_normalize(rs.get(api).json()['rankings'])
+    data = pd.json_normalize(http_get(api).json()['rankings'])
 
     #Add player name columns
     data['player_name'] = (data['firstName']+" "+data['lastName']).str.upper()
@@ -858,7 +859,7 @@ def nhl_scrape_game_info(game_ids:list[int]) -> pd.DataFrame:
     link = 'https://api-web.nhle.com/v1/gamecenter'
 
     #Scrape information
-    df = pd.concat([pd.json_normalize(rs.get(f'{link}/{game_id}/landing').json()) for game_id in game_ids])
+    df = pd.concat([pd.json_normalize(http_get(f'{link}/{game_id}/landing').json()) for game_id in game_ids])
 
     #Add extra info
     df['game_date'] = df['gameDate']
@@ -914,7 +915,7 @@ def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrap
 
     #Iterate through each category and merge the total df to create a full EDGE stats df
     dfs = []
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as executor:
         futures = {executor.submit(edge_stat_entry, entry, season, season_type, group): entry for entry in entries}
         for future in as_completed(futures):
             try:
@@ -964,7 +965,7 @@ def nhl_scrape_seasons(analytic: bool = False) -> pd.DataFrame:
             A DataFrame containing a list of all NHL seasons.
     """
 
-    data = rs.get('https://api-web.nhle.com/v1/season').json()
+    data = http_get('https://api-web.nhle.com/v1/season').json()
 
     if analytic:
         data = [season for season in data if season > 20062007]

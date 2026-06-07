@@ -8,6 +8,7 @@ import requests as rs
 import json as json_lib
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from wsba_hockey.tools.http import POOL_WORKERS, get as http_get, make_pooled_session
 from wsba_hockey.tools.globals import (
     COL_MAP,
     DEFAULT_ROSTER,
@@ -131,16 +132,17 @@ def apply_passing_imputation(pbp):
         goal_team_mask = team_mask & goals
         for j in range(1, 7):
             player_col = f'{venue}_on_{j}_id'
-            is_primary_assist = pbp[player_col] == pbp['event_player_2_id']
-            is_secondary_assist = pbp[player_col] == pbp['event_player_3_id']
+            player_ids = pd.to_numeric(pbp[player_col], errors='coerce')
+            is_primary_assist = player_ids == pd.to_numeric(pbp['event_player_2_id'], errors='coerce')
+            is_secondary_assist = player_ids == pd.to_numeric(pbp['event_player_3_id'], errors='coerce')
 
             pbp.loc[goal_team_mask & is_primary_assist, f'{venue}_on_{j}_primary_fenwick_assist_probability'] = 1.0
             pbp.loc[goal_team_mask & is_secondary_assist, f'{venue}_on_{j}_secondary_fenwick_assist_probability'] = 1.0
 
         if goal_team_mask.any():
             goal_indices = pbp.index[goal_team_mask]
-            goal_on_ice_ids = pbp.loc[goal_indices, player_cols].values
-            goal_on_ice_pos = pbp.loc[goal_indices, pos_cols].values
+            goal_on_ice_ids = pbp.loc[goal_indices, player_cols].apply(pd.to_numeric, errors='coerce').values
+            goal_on_ice_pos = pbp.loc[goal_indices, pos_cols].fillna('').astype(str).apply(lambda col: col.str.upper()).values
             tertiary_probs_goals = np.vectorize(
                 lambda pos: POS_BASE_PROB['tertiary'].get(pos, 0)
             )(goal_on_ice_pos)
@@ -159,12 +161,12 @@ def apply_passing_imputation(pbp):
             tertiary_probs_goals = (tertiary_probs_goals / tertiary_sums) * 0.8
             pbp.loc[goal_indices, prob_cols['tertiary']] = tertiary_probs_goals
 
-        if non_goals.any():
-            non_goal_team_mask = team_mask & non_goals
+        non_goal_team_mask = team_mask & non_goals
+        if non_goal_team_mask.any():
             non_goal_indices = pbp.index[non_goal_team_mask]
-            on_ice_ids = pbp.loc[non_goal_indices, player_cols].values
-            on_ice_pos = pbp.loc[non_goal_indices, pos_cols].values
-            shooter_ids = pbp.loc[non_goal_indices, 'event_player_1_id'].values[:, None]
+            on_ice_ids = pbp.loc[non_goal_indices, player_cols].apply(pd.to_numeric, errors='coerce').values
+            on_ice_pos = pbp.loc[non_goal_indices, pos_cols].fillna('').astype(str).apply(lambda col: col.str.upper()).values
+            shooter_ids = pd.to_numeric(pbp.loc[non_goal_indices, 'event_player_1_id'], errors='coerce').values[:, None]
 
             probs = {}
             for assist_type in ['primary', 'secondary', 'tertiary']:
@@ -195,7 +197,7 @@ def get_game_coaches(game_id):
     
     #Retreive data (or try to)
     try:
-        json = rs.get(f'https://api-web.nhle.com/v1/gamecenter/{game_id}/right-rail').json()
+        json = http_get(f'https://api-web.nhle.com/v1/gamecenter/{game_id}/right-rail').json()
         data = json['gameInfo']
 
         #Add coaches
@@ -235,7 +237,7 @@ def get_game_info(game_id):
         return data
 
     #Retrieve data (parallelize independent endpoints to reduce wall time)
-    session = rs.Session()
+    session = make_pooled_session()
     api_pbp = f"https://api-web.nhle.com/v1/gamecenter/{game_id}/play-by-play"
     api_shifts = f"https://api.nhle.com/stats/rest/en/shiftcharts?cayenneExp=gameId={game_id}"
     api_right_rail = f"https://api-web.nhle.com/v1/gamecenter/{game_id}/right-rail"
@@ -245,7 +247,7 @@ def get_game_info(game_id):
     shifts_cache = os.path.join(cache_root, "api", "shiftcharts", f"{game_id}.json")
     rr_cache = os.path.join(cache_root, "api", "right_rail", f"{game_id}.json")
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as executor:
         pbp_future = executor.submit(_cached_get_json, session, api_pbp, pbp_cache)
         shifts_future = executor.submit(_cached_get_json, session, api_shifts, shifts_cache)
         rr_future = executor.submit(_cached_get_json, session, api_right_rail, rr_cache)
@@ -271,10 +273,10 @@ def get_game_info(game_id):
             referees = game_info.get('referees', [])
             linesmen = game_info.get('linesmen', [])
             officials = {
-                'referee_1': referees[0].get('default') if len(referees) > 0 else None,
-                'referee_2': referees[1].get('default') if len(referees) > 1 else None,
-                'linesman_1': linesmen[0].get('default') if len(linesmen) > 0 else None,
-                'linesman_2': linesmen[1].get('default') if len(linesmen) > 1 else None
+                'referee_1': referees[0].get('default').upper() if len(referees) > 0 else None,
+                'referee_2': referees[1].get('default').upper() if len(referees) > 1 else None,
+                'linesman_1': linesmen[0].get('default').upper() if len(linesmen) > 0 else None,
+                'linesman_2': linesmen[1].get('default').upper() if len(linesmen) > 1 else None
             }
         except Exception:
             coaches = {}
@@ -521,7 +523,7 @@ def clean_html_pbp(info):
         html = None
 
     if html is None:
-        html = rs.get(doc).content
+        html = http_get(doc).content
         try:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             with open(cache_path, "wb") as f:
@@ -812,7 +814,7 @@ def espn_game_id(date,away,home):
 
     #Retreive data
     api = f"https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?dates={date}"
-    schedule = pd.json_normalize(rs.get(api).json()['events'])
+    schedule = pd.json_normalize(http_get(api).json()['events'])
 
     #Create team abbreviation columns
     schedule['away_team_abbr'] = schedule['shortName'].str[:3].str.strip(" ")
@@ -839,7 +841,7 @@ def parse_espn(date,away,home):
     
     #Hidden ESPN API endpoint (akin to the gamecenter/{game_id}/play-by-play NHL endpoint)
     url = f'https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/summary?event={game_id}'
-    data = rs.get(url).json()
+    data = http_get(url).json()
     teams = data['boxscore']['teams']
 
     #Retreive plays
@@ -933,7 +935,7 @@ def combine_pbp(info,sources):
         json_type = 'nhl'
         # NHL JSON + NHL HTML (HTML is required for descriptions / legacy compatibility).
         # Run in parallel since HTML fetch/parse is usually the slowest part.
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=POOL_WORKERS) as executor:
             html_future = executor.submit(parse_html, info)
             json_future = executor.submit(parse_json, info)
             html_task = html_future.result()
@@ -1112,7 +1114,7 @@ def parse_shifts_html(info,home):
     game_id = info['game_id']
     season = info['season']
     link = f"https://www.nhl.com/scores/htmlreports/{season}/T{'H' if home else 'V'}{game_id[-6:]}.HTM"
-    doc = rs.get(link).content
+    doc = http_get(link).content
     td, teams = get_soup(doc)
 
     team = teams[0]
@@ -1261,7 +1263,7 @@ def combine_shifts(info,sources):
     roster = info['rosters']
 
     #Quickly combine shifts data (home/away independent; parallelize for speed, especially when falling back to HTML shifts)
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as executor:
         away_future = executor.submit(parse_shift_events, info, False)
         home_future = executor.submit(parse_shift_events, info, True)
         away = away_future.result()
@@ -1348,7 +1350,7 @@ def combine_data(info,sources):
     #Given game info, return complete play-by-play data
 
     # PBP (HTML fetch/parse) and shifts are independent; run in parallel to reduce wall time.
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as executor:
         pbp_future = executor.submit(combine_pbp, info, sources)
         shifts_future = executor.submit(combine_shifts, info, sources)
         pbp = pbp_future.result()
@@ -1450,6 +1452,8 @@ def combine_data(info,sources):
                 df[f'{venue}_on_{i+1}_pos'] = np.nan
 
     #Return: complete play-by-play with all important data for each event in a provided game
+    df = apply_passing_imputation(df)
+
     return df[[col for col in PBP_COLS if col in df.columns.to_list()]].replace(r'^\s*$', np.nan, regex=True)
 
 ## ROSTER FUNCTIONS ##
@@ -1472,7 +1476,7 @@ def edge_stat_entry(entry, season, season_type, type):
     def fetch_cat(cat):
         api = f'https://api-web.nhle.com/v1/edge/{type}-{cat}/{entry}/{season}/{season_type}'
         try:
-            data = rs.get(api).json()
+            data = http_get(api).json()
         except:
             return None
 
@@ -1492,7 +1496,7 @@ def edge_stat_entry(entry, season, season_type, type):
 
     #Parallel fetch all categories
     dfs = []
-    with ThreadPoolExecutor(max_workers=len(EDGE_CAT[type])) as executor:
+    with ThreadPoolExecutor(max_workers=min(POOL_WORKERS, len(EDGE_CAT[type]))) as executor:
         futures = [executor.submit(fetch_cat, cat) for cat in EDGE_CAT[type]]
         for future in as_completed(futures):
             df = future.result()

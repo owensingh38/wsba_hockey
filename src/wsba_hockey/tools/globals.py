@@ -251,6 +251,7 @@ COL_MAP = {
         'badges': 'badges',
         'teamLogo': 'team_logo',
         'sweaterNumber': 'sweater_number',
+        'positionCode': 'position',
         'position': 'position',
         'headshot': 'headshot',
         'heroImage': 'hero_image',
@@ -655,6 +656,12 @@ PBP_COLS = [
     "home_on_1_id","home_on_2_id","home_on_3_id","home_on_4_id","home_on_5_id","home_on_6_id","home_goalie_id",
     "away_on_1_pos","away_on_2_pos","away_on_3_pos","away_on_4_pos","away_on_5_pos","away_on_6_pos",
     "home_on_1_pos","home_on_2_pos","home_on_3_pos","home_on_4_pos","home_on_5_pos","home_on_6_pos",
+    *[
+        f"{venue}_on_{i}_{assist_type}_fenwick_assist_probability"
+        for venue in ["away", "home"]
+        for assist_type in ["primary", "secondary", "tertiary"]
+        for i in range(1, 7)
+    ],
     "event_coach","away_coach","home_coach",
     "referee_1","referee_2","linesman_1","linesman_2"
 ]
@@ -895,11 +902,7 @@ CONTINUOUS = ['event_distance',
             'angle_from_last',
             'seconds_since_last',
             'speed_from_last',
-            'speed_of_angle_from_last',
-            'event_player_1_shift_time_on_ice',
-            'event_on_ice_against_min_shift_time_on_ice',
-            'event_on_ice_against_avg_shift_time_on_ice',
-            'event_on_ice_against_max_shift_time_on_ice'
+            'speed_of_angle_from_last'
             ]
 BOOLEAN = ['wrist',
         'deflected',
@@ -938,6 +941,9 @@ BOOLEAN = ['wrist',
         'offwing',
         'short',
         'failed_bank',
+        'cross_ice',
+        'rebound',
+        'rush'
     ]
 
 STRENGTH_MATCH = {
@@ -1473,7 +1479,11 @@ DATASET_COL = {
         'neutral_zone_giveaways', 
         'passes', 'carries', 'recovered_dump_ins',
         'entry_chances_against',
-        'cycle_fenwick_assists','forecheck_fenwick_assists','rush_fenwick_assists'
+        'cycle_fenwick_assists','forecheck_fenwick_assists','rush_fenwick_assists',
+        'entry_attempts',
+        'entry_attempts_against',
+        'exit_attempts',
+        'retrieval_attempts'
     ],
     
     'wsba':[

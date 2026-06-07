@@ -33,7 +33,7 @@ from wsba_hockey.wsba_main import (
     utility_get_unique
 )
 
-__version__ = "1.6.0"
+__version__ = "1.6.2"
 
 from wsba_hockey.tools.globals import (
     A3Z_STRENGTH_FIXES,
