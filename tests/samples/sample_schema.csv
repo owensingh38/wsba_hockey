@@ -36,7 +36,7 @@ shift_type,str
 event_player_1_name,str
 event_player_2_name,str
 event_player_3_name,str
-event_player_1_id,float64
+event_player_1_id,object
 event_player_2_id,float64
 event_player_3_id,float64
 event_player_1_pos,str
@@ -146,10 +146,10 @@ home_on_6_tertiary_fenwick_assist_probability,float64
 event_coach,str
 away_coach,str
 home_coach,str
-referee_1,str
-referee_2,str
-linesman_1,str
-linesman_2,str
+referee_1,object
+referee_2,object
+linesman_1,object
+linesman_2,object
 event_index,int64
 xG,float64
 med_x,float64

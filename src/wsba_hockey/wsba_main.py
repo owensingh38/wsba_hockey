@@ -1,6 +1,5 @@
 import os
 import random
-import matplotlib
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -15,6 +14,7 @@ from wsba_hockey.tools.scraping import (
     combine_data,
     edge_stat_entry,
     get_game_info,
+    parse_event_sprite,
     parse_game_roster,
 )
 from wsba_hockey.tools.agg import (
@@ -36,7 +36,7 @@ from wsba_hockey.tools.plotting import (
     team_primary_color_map,
 )
 from wsba_hockey.tools.xg_model import nhl_apply_xG
-from wsba_hockey.tools.http import POOL_WORKERS, get as http_get, make_pooled_session
+from wsba_hockey.tools.http import POOL_WORKERS, get as http_get, make_pooled_session, pooled_session
 from wsba_hockey.tools.globals import (
     BIO_STAT_COL,
     COL_MAP,
@@ -951,6 +951,41 @@ def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrap
 
         #Return: dataframe including NHL Edge data for the specified group and the entries included
         return df[[col for col in COL_MAP['edge'].values() if col in df.columns]]
+
+def nhl_scrape_event_data(game_info: dict[int, dict]) -> pd.DataFrame:
+    """
+    Given NHL game IDs and event IDs, return event sprite tracking data.
+
+    Args:
+        game_info (dict[int, dict]):
+            Dictionary mapping NHL game IDs to event IDs to scrape.
+
+    Returns:
+        pd.DataFrame:
+            A DataFrame containing event sprite tracking data.
+    """
+
+    session = pooled_session()
+    session.headers.update({"Referer": "https://www.nhl.com/", "User-Agent": "Mozilla/5.0"})
+    
+    dfs = []
+    
+    for game_id, events in game_info.items():
+        print(f"Collecting event data for events {events} in game {game_id}...")
+        season = int(f"{str(game_id)[:4]}{int(str(game_id)[:4]) + 1}")
+        landing = session.get(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/landing", timeout=10).json()
+        
+        for event_id in events:
+            response = session.get(f"https://wsr.nhle.com/sprites/{season}/{game_id}/ev{event_id}.json", timeout=10)
+            if response.status_code == 200:
+                df = parse_event_sprite(response.json(), landing["homeTeam"]["id"], landing["awayTeam"]["id"])
+                df["game_id"] = int(game_id)
+                df["season"] = season
+                df["season_type"] = int(str(game_id)[4:6])
+                df["ev_id"] = event_id
+                dfs.append(df)
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 def nhl_scrape_seasons(analytic: bool = False) -> pd.DataFrame:
     """

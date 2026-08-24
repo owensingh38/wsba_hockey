@@ -53,6 +53,11 @@ wsba.nhl_scrape_edge(20252026,'goalie',[8480280])
 wsba.nhl_scrape_edge(20252026,'team',['BOS'])
 ```
 
+### NHL Event Tracking Data
+```python
+wsba.nhl_scrape_event_data({2023020001: [101, 102]})
+```
+
 ## DATA ANALYTICS
 ### Expected Goals
 ```python

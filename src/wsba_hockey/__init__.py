@@ -14,6 +14,7 @@ from wsba_hockey.wsba_main import (
     nhl_scrape_game_info,
     nhl_scrape_edge,
     nhl_scrape_seasons,
+    nhl_scrape_event_data,
 
     # Calculation functions
     nhl_calculate_stats,

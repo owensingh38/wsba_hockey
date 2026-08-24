@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pandas as pd
 import requests as rs
-import json as json_lib
+import json
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from wsba_hockey.tools.http import POOL_WORKERS, get as http_get, make_pooled_session
@@ -197,8 +197,8 @@ def get_game_coaches(game_id):
     
     #Retreive data (or try to)
     try:
-        json = http_get(f'https://api-web.nhle.com/v1/gamecenter/{game_id}/right-rail').json()
-        data = json['gameInfo']
+        payload = http_get(f'https://api-web.nhle.com/v1/gamecenter/{game_id}/right-rail').json()
+        data = payload['gameInfo']
 
         #Add coaches
         try:
@@ -223,7 +223,7 @@ def get_game_info(game_id):
         try:
             if os.path.exists(cache_path) and (time.time() - os.path.getmtime(cache_path) < max_age_sec):
                 with open(cache_path, "r", encoding="utf-8") as f:
-                    return json_lib.load(f)
+                    return json.load(f)
         except Exception:
             pass
 
@@ -231,7 +231,7 @@ def get_game_info(game_id):
         try:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             with open(cache_path, "w", encoding="utf-8") as f:
-                json_lib.dump(data, f)
+                json.dump(data, f)
         except Exception:
             pass
         return data
@@ -1521,3 +1521,75 @@ def edge_stat_entry(entry, season, season_type, type):
 
     #Return: NHL Edge stats DataFrame for entry provided
     return edge_df
+
+def parse_event_sprite(frames: list[dict], home_team_id, away_team_id) -> pd.DataFrame:
+    #Given frames from an event, return scaled frame-by-frame data
+    if isinstance(frames, dict):
+        frames = frames.get('frames') or frames.get('data') or [frames]
+    rows = []
+    for frame in frames:
+        row = {}
+        for key, value in frame.items():
+            if key != 'onIce':
+                name = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', key)
+                row[re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name).lower()] = value
+
+        players = {'home': [], 'away': [], 'unknown': []}
+        puck = None
+        for track_id, obj in (frame.get('onIce') or {}).items():
+            if obj.get('id') == 1 or str(track_id) == '1' or not obj.get('playerId'):
+                puck = obj
+                continue
+
+            team_id = obj.get('teamId')
+            if team_id == home_team_id:
+                venue = 'home'
+            elif team_id == away_team_id:
+                venue = 'away'
+            elif str(track_id).startswith('6'):
+                venue = 'home'
+            elif str(track_id).startswith('7'):
+                venue = 'away'
+            else:
+                venue = 'unknown'
+            players[venue].append((str(track_id), obj))
+
+        for venue, items in players.items():
+            for index, (_, obj) in enumerate(sorted(items, key=lambda item: item[0]), start=1):
+                for attr, value in obj.items():
+                    if attr == 'id':
+                        suffix = 'tracking_id'
+                    elif attr == 'playerId':
+                        suffix = 'id'
+                    elif attr == 'teamAbbrev':
+                        suffix = 'team_abbr'
+                    else:
+                        name = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', attr)
+                        suffix = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name).lower()
+                    row[f'{venue}_on_ice_{index}_{suffix}'] = value
+
+        if puck is not None:
+            for attr, value in puck.items():
+                if attr in ('sweaterNumber', 'teamAbbrev', 'teamId'):
+                    continue
+                if attr == 'id':
+                    suffix = 'tracking_id'
+                elif attr == 'playerId':
+                    suffix = 'id'
+                else:
+                    name = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', attr)
+                    suffix = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name).lower()
+                row[f'puck_{suffix}'] = value
+
+        rows.append(row)
+
+    #Convert coordinates from the animation scale to the scale observed in PBP data
+    df = pd.DataFrame(rows)
+    for col in df.columns:
+        if col.endswith('_x') and pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = (df[col] / 2400.0) * 200.0 - 100.0
+        elif col.endswith('_y') and pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = (df[col] / 1020.0) * 84.0 - 42.0
+
+    #Return: DataFrame with frame-by-frame event data
+    return df

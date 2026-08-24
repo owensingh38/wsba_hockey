@@ -55,6 +55,18 @@ def test_wsba():
     edge_data = wsba.nhl_scrape_edge(20252026, "skater", [8477956, 8479987])
     edge_data.to_csv(f"{sample_dir}/sample_edge_data.csv", index=False)
 
+    # Collect animation for all goals in the game we plotted above (game_1):
+    events_game_id = 2025021000
+    events_pbp = wsba.nhl_scrape_game(events_game_id)
+    event_ids = events_pbp.loc[
+        (events_pbp["ppt_replay_url"].notna()), "ppt_replay_url"
+    ].str[-8:-5].to_list()
+
+    event_data = wsba.nhl_scrape_event_data(
+        {events_game_id: event_ids}
+    )
+    event_data.to_csv(f"{sample_dir}/sample_event_data.csv", index=False)
+
     # Collect schema of play-by-play dataframe
     pbp_schema = wsba.utility_get_schema(pbp)
     pbp_schema.to_csv(f"{sample_dir}/sample_schema.csv", index=False)
