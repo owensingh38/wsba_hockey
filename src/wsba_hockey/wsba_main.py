@@ -5,7 +5,6 @@ import datetime as dt
 import time
 from numbers import Integral
 from typing import Literal, Union
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.exceptions import JSONDecodeError
 from wsba_hockey.tools.scraping import (
     combine_data,
@@ -13,6 +12,7 @@ from wsba_hockey.tools.scraping import (
     get_game_info,
     parse_event_sprite,
     parse_game_roster,
+    stringify_nested,
 )
 from wsba_hockey.tools.agg import (
     apply_params,
@@ -31,7 +31,6 @@ from wsba_hockey.tools.plotting import (
     team_primary_color_map,
 )
 from wsba_hockey.tools.xg_model import nhl_apply_xG
-import wsba_hockey.tools.http as http_tools
 from wsba_hockey.tools.http import get as http_get, pooled_session
 from wsba_hockey.tools.globals import (
     random_game_is_valid,
@@ -56,6 +55,21 @@ from wsba_hockey.tools.globals import (
 
 ### WSBA HOCKEY ###
 ## Provided below are all integral functions in the WSBA Hockey Python package. ##
+
+
+def _empty_scrape_result(split_shifts=False, export_roster=False, errors=False):
+    """Return an empty scrape using the same shape as a successful scrape."""
+    empty = pl.DataFrame()
+    if split_shifts:
+        result = {'pbp': empty, 'shifts': empty}
+        if errors:
+            result['errors'] = []
+    else:
+        result = empty
+        if errors:
+            result = {'pbp': result, 'errors': []}
+
+    return (result, empty) if export_roster else result
 
 ## SCRAPE FUNCTIONS ##
 def nhl_scrape_game(
@@ -108,9 +122,13 @@ def nhl_scrape_game(
     """
     
     #Wrap game_id in a list if only a single game_id is provided
-    game_ids = [game_ids] if type(game_ids) != list else game_ids
+    game_ids = list(game_ids) if isinstance(game_ids, (list, tuple)) else [game_ids]
     if session is None:
         session = pooled_session()
+
+    if not game_ids:
+        print("\rNo data returned.")
+        return _empty_scrape_result(split_shifts, export_roster, errors)
 
     pbps = []
     if game_ids[0] == 'random':
@@ -125,7 +143,7 @@ def nhl_scrape_game(
         print("Finding valid, random game ids...")
         while len(game_ids) < num:
             candidates = []
-            while len(candidates) < max(http_tools.POOL_WORKERS * 2, num - len(game_ids)):
+            while len(candidates) < max(2, num - len(game_ids)):
                 rand_year = random.randint(start,end)
                 rand_season_type = random.randint(2,3)
                 rand_game = random.randint(1,1312)
@@ -134,20 +152,14 @@ def nhl_scrape_game(
                     seen_ids.add(rand_id)
                     candidates.append(rand_id)
 
-            with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
-                futures = {
-                    executor.submit(random_game_is_valid, rand_id, session): rand_id
-                    for rand_id in candidates
-                }
-                for future in as_completed(futures):
-                    if future.result() and len(game_ids) < num:
-                        game_ids.append(futures[future])
+            for rand_id in candidates:
+                if random_game_is_valid(rand_id, session) and len(game_ids) < num:
+                    game_ids.append(rand_id)
             print(f"\rGame IDs found in range {start}-{end}: {len(game_ids)}/{num}",end="")
 
         print(f"\rGame IDs found in range {start}-{end}: {len(game_ids)}/{num}")
             
-    # Scrape independent games concurrently.  Results are placed back in
-    # input order so the public output remains deterministic.
+    # Scrape games sequentially while task-local game work remains concurrent.
     rost_dfs = [None] * len(game_ids)
     game_results = [None] * len(game_ids)
     error_indices = []
@@ -166,31 +178,23 @@ def nhl_scrape_game(
             data.write_csv(f"{dirs}{source_game_id}.csv")
         return index, game_id, data, roster, time.perf_counter() - started
 
-    game_workers = min(len(game_ids), max(1, http_tools.POOL_WORKERS))
-    with ThreadPoolExecutor(max_workers=game_workers) as executor:
-        futures = {
-            executor.submit(scrape_one, index, game_id): index
-            for index, game_id in enumerate(game_ids)
-        }
-        for future in as_completed(futures):
-            try:
-                index, game_id, data, roster, secs = future.result()
-                game_results[index] = data
-                rost_dfs[index] = roster
-                prog += 1
-                print(
-                    f"Scraping data from game {game_id}... finished in {secs:.2f} seconds. "
-                    f"{prog}/{len(game_ids)} ({(prog / len(game_ids)) * 100:.2f}%)"
-                )
-            except Exception as e:
-                # Games such as all-star and pre-season games can fail here.
-                index = futures[future]
-                game_id = game_ids[index]
-                if game_id in KNOWN_PROBS:
-                    print(f"\nGame {game_id} has a known problem: {KNOWN_PROBS[game_id]}")
-                else:
-                    print(f"\nUnable to scrape game {game_id}.  Exception: {e}")
-                error_indices.append(index)
+    for index, game_id in enumerate(game_ids):
+        try:
+            index, game_id, data, roster, secs = scrape_one(index, game_id)
+            game_results[index] = data
+            rost_dfs[index] = roster
+            prog += 1
+            print(
+                f"Scraping data from game {game_id}... finished in {secs:.2f} seconds. "
+                f"{prog}/{len(game_ids)} ({(prog / len(game_ids)) * 100:.2f}%)"
+            )
+        except Exception as e:
+            # Games such as all-star and pre-season games can fail here.
+            if game_id in KNOWN_PROBS:
+                print(f"\nGame {game_id} has a known problem: {KNOWN_PROBS[game_id]}")
+            else:
+                print(f"\nUnable to scrape game {game_id}.  Exception: {e}")
+            error_indices.append(index)
 
     pbps.extend(data for data in game_results if data is not None)
     rost_dfs = [roster for roster in rost_dfs if roster is not None]
@@ -199,7 +203,7 @@ def nhl_scrape_game(
     #Add all pbps together
     if not pbps:
         print("\rNo data returned.")
-        return pl.DataFrame()
+        return _empty_scrape_result(split_shifts, export_roster, errors)
     df = pl.concat(pbps, how='diagonal_relaxed')
     rosters = pl.concat(rost_dfs, how='diagonal_relaxed') if export_roster else None
 
@@ -331,7 +335,7 @@ def nhl_scrape_schedule(
         print('No games found for range of dates provided.')
 
     #Return: specificed schedule data
-    return df.select([col for col in COL_MAP['schedule'].values() if col in df.columns])
+    return stringify_nested(df.select([col for col in COL_MAP['schedule'].values() if col in df.columns]))
 
 def nhl_scrape_season(
         season:int, 
@@ -431,7 +435,7 @@ def nhl_scrape_season(
     #If no games found, terminate the process
     if not game_ids:
         print('No games found for dates in season...')
-        return ""
+        return _empty_scrape_result(split_shifts, export_roster, errors)
     
     print(f"Scraping games from {str(season)[0:4]}-{str(season)[4:8]} season...")
     start = time.perf_counter()
@@ -500,6 +504,11 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
 
     if session is None:
         session = pooled_session()
+
+    if isinstance(arg, tuple):
+        arg = list(arg)
+    if isinstance(arg, list) and not arg:
+        return pl.DataFrame()
 
     current_year = dt.datetime.now().year
 
@@ -598,7 +607,7 @@ def nhl_scrape_game_roster(game_ids: int | list[int], session=None) -> pl.DataFr
             A DataFrame containing the rosters for all games in the specified list.
     """
     #Wrap game_id in a list if only a single game_id is provided
-    game_ids = [game_ids] if type(game_ids) != list else game_ids
+    game_ids = list(game_ids) if isinstance(game_ids, (list, tuple)) else [game_ids]
 
     #Reuse a caller-owned session when supplied; otherwise use the package default.
     if session is None:
@@ -617,17 +626,14 @@ def nhl_scrape_game_roster(game_ids: int | list[int], session=None) -> pl.DataFr
     #Re-use the game info for pbp to just get the roster
     dfs = []
     errors = []
-    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as ex:
-        futures = {ex.submit(fetch_roster, g): g for g in game_ids}
-        for f in as_completed(futures):
-            g = futures[f]
-            try:
-                r = f.result()
-                if r is not None:
-                    dfs.append(r)
-            except Exception as e:
-                print(f"\nUnable to scrape game {g}.  Exception: {e}")
-                errors.append(g)
+    for g in game_ids:
+        try:
+            r = fetch_roster(g)
+            if r is not None:
+                dfs.append(r)
+        except Exception as e:
+            print(f"\nUnable to scrape game {g}.  Exception: {e}")
+            errors.append(g)
 
     if dfs:
         rosters = pl.concat(dfs, how='diagonal_relaxed')
@@ -793,7 +799,7 @@ def nhl_scrape_player_info(player_ids: list[int], session=None) -> pl.DataFrame:
     print(f'Retreiving player information for {player_ids}...')
 
     #Wrap game_id in a list if only a single game_id is provided
-    player_ids = [player_ids] if type(player_ids) != list else player_ids
+    player_ids = list(player_ids) if isinstance(player_ids, (list, tuple)) else [player_ids]
 
     if session is None:
         session = pooled_session()
@@ -810,9 +816,7 @@ def nhl_scrape_player_info(player_ids: list[int], session=None) -> pl.DataFrame:
         except JSONDecodeError:
             return None
 
-    infos = []
-    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
-        infos = list(executor.map(fetch_player, player_ids))
+    infos = [fetch_player(player_id) for player_id in player_ids]
 
     infos = [df for df in infos if df is not None and not df.is_empty()]
     if infos:
@@ -847,11 +851,17 @@ def nhl_scrape_draft_rankings(arg:str | Literal['now'] = 'now', category:int = 0
 
     print(f'Scraping draft rankings for {arg}...\nCategory: {DRAFT_CAT[category]}...')
 
-    #Player category only applies when requesting a specific season
-    # Categories apply only to date-specific ranking endpoints; ``now`` is a
-    # single all-category response as documented above.
-    api = f"https://api-web.nhle.com/v1/draft/rankings/{arg}/{category}" if category > 0 and arg != 'now' else f"https://api-web.nhle.com/v1/draft/rankings/{arg}"
-    data = pl.json_normalize(http_get(api, session=session).json()['rankings'])
+    # The date-specific endpoint is keyed by draft year and requires a
+    # category. Category 0 means all categories, so combine categories 1-4.
+    draft_arg = str(arg)[:4] if arg != 'now' else arg
+    categories = range(1, 5) if category == 0 and draft_arg != 'now' else [category]
+    rankings = []
+    for draft_category in categories:
+        api = f"https://api-web.nhle.com/v1/draft/rankings/{draft_arg}"
+        if draft_arg != 'now':
+            api += f"/{draft_category}"
+        rankings.append(pl.json_normalize(http_get(api, session=session).json()['rankings']))
+    data = pl.concat(rankings, how='diagonal_relaxed')
 
     #Add player name columns
     data = data.with_columns((pl.col('firstName')+" "+pl.col('lastName')).str.to_uppercase().alias('player_name'))
@@ -885,9 +895,12 @@ def nhl_scrape_game_info(game_ids:list[int], session=None) -> pl.DataFrame:
         session = pooled_session()
 
     #Wrap game_id in a list if only a single game_id is provided
-    game_ids = [game_ids] if type(game_ids) != list else game_ids
+    game_ids = list(game_ids) if isinstance(game_ids, (list, tuple)) else [game_ids]
 
     print(f'Finding game information for games: {game_ids}')
+
+    if not game_ids:
+        return pl.DataFrame()
 
     link = 'https://api-web.nhle.com/v1/gamecenter'
 
@@ -901,7 +914,7 @@ def nhl_scrape_game_info(game_ids:list[int], session=None) -> pl.DataFrame:
     df = df.rename(COL_MAP['schedule'], strict=False)
 
     #Return: game information
-    return df.select([col for col in COL_MAP['schedule'].values() if col in df.columns])
+    return stringify_nested(df.select([col for col in COL_MAP['schedule'].values() if col in df.columns]))
 
 def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrape: list[int | str], season_type:int = 2, session=None) -> pl.DataFrame:
     """
@@ -949,17 +962,15 @@ def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrap
 
     #Iterate through each category and merge the total df to create a full EDGE stats df
     dfs = []
-    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
-        futures = {executor.submit(edge_stat_entry, entry, season, season_type, group, session): entry for entry in entries}
-        for future in as_completed(futures):
-            try:
-                df_entry = future.result()
-            except Exception as e:
-                print(f'Error fetching {futures[future]}: {e}')
-                df_entry = pl.DataFrame()
+    for entry in entries:
+        try:
+            df_entry = edge_stat_entry(entry, season, season_type, group, session)
+        except Exception as e:
+            print(f'Error fetching {entry}: {e}')
+            df_entry = pl.DataFrame()
 
-            if not df_entry.is_empty():
-                dfs.append(df_entry)
+        if not df_entry.is_empty():
+            dfs.append(df_entry)
 
     if not dfs:
         return pl.DataFrame()
@@ -1024,7 +1035,7 @@ def nhl_scrape_event_data(game_info: dict[int, dict], session=None) -> pl.DataFr
 
     return pl.concat(dfs, how='diagonal_relaxed') if dfs else pl.DataFrame()
 
-def nhl_scrape_seasons(analytic: bool = False, session=None) -> pl.DataFrame:
+def nhl_scrape_seasons(analytic: bool = False, session=None) -> list[int]:
     """
     Returns list of NHL seasons
 
@@ -1033,8 +1044,8 @@ def nhl_scrape_seasons(analytic: bool = False, session=None) -> pl.DataFrame:
             Filters list of seasons to those only included in the WSBA Hockey package (2007-2008 and beyond) if True.  Default is False.
 
     Returns:
-        pl.DataFrame:
-            A DataFrame containing a list of all NHL seasons.
+        list[int]:
+            A list of all NHL seasons.
     """
 
     if session is None:

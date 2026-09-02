@@ -4,15 +4,15 @@ from requests.adapters import HTTPAdapter
 
 ### REQUESTS HELPER ###
 
-POOL_WORKERS = 2
+# The largest task-local pool is the six-category EDGE scrape.
+SESSION_POOL_SIZE = 6
 _thread_local = threading.local()
 
 def make_pooled_session() -> rs.Session:
-    workers = max(1, int(POOL_WORKERS))
     session = rs.Session()
     adapter = HTTPAdapter(
-        pool_connections=workers,
-        pool_maxsize=workers,
+        pool_connections=SESSION_POOL_SIZE,
+        pool_maxsize=SESSION_POOL_SIZE,
         pool_block=True,
     )
     session.mount("http://", adapter)
@@ -21,14 +21,10 @@ def make_pooled_session() -> rs.Session:
 
 
 def pooled_session() -> rs.Session:
-    workers = max(1, int(POOL_WORKERS))
     session = getattr(_thread_local, "session", None)
-    if session is None or getattr(_thread_local, "pool_workers", None) != workers:
-        if session is not None:
-            session.close()
+    if session is None:
         session = make_pooled_session()
         _thread_local.session = session
-        _thread_local.pool_workers = workers
     return session
 
 

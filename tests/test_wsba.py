@@ -1,4 +1,5 @@
 import os
+import tempfile
 import matplotlib.pyplot as plt
 import polars as pl
 import wsba_hockey as wsba
@@ -75,6 +76,15 @@ def test_wsba():
         # Standings Scraping
         standings = wsba.nhl_scrape_standings(20222023, session=session)
         standings.write_csv(f"{sample_dir}/sample_standings.csv")
+
+        # Schedule and game-info results must be directly CSV-writable.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for frame in [
+                wsba.nhl_scrape_schedule(20222023, start="02-01", end="02-01", session=session),
+                wsba.nhl_scrape_game_info(2025021000, session=session),
+            ]:
+                assert not any(dtype.is_nested() for dtype in frame.schema.values())
+                frame.write_csv(os.path.join(temp_dir, "output.csv"))
 
         # Get edge data for David Pastrnak and Morgan Geekie in 2025-26
         edge_data = wsba.nhl_scrape_edge(20252026, "skater", [8477956, 8479987], session=session)

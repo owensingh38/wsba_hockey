@@ -6,8 +6,7 @@ import numpy as np
 import polars as pl
 import requests as rs
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import wsba_hockey.tools.http as http_tools
+from concurrent.futures import ThreadPoolExecutor
 from wsba_hockey.tools.http import get as http_get, pooled_session
 from wsba_hockey.tools.globals import (
     COL_MAP,
@@ -52,20 +51,26 @@ def seconds_expr(column):
     )
 
 
-def _write_source_csv(df, path):
-    # Source exports are diagnostic CSVs. Legacy payloads can contain nested
-    # JSON values, which CSV cannot represent natively; stringify only the
-    # export so the in-memory result remains unchanged.
+def stringify_nested(df):
+    # Polars does not support nested columns in CSV output. Keep nested data
+    # intact until a tabular/CSV boundary, where JSON is the lossless form.
     nested = [column for column, dtype in df.schema.items() if dtype.is_nested()]
     if nested:
-        df = df.with_columns([
+        return df.with_columns([
             pl.col(column).map_elements(
                 lambda value: json.dumps(value, default=str),
                 return_dtype=pl.String,
             ).alias(column)
             for column in nested
         ])
-    df.select(pl.all().cast(pl.String)).write_csv(path)
+    return df
+
+
+def _write_source_csv(df, path):
+    # Source exports are diagnostic CSVs. Legacy payloads can contain nested
+    # JSON values, which CSV cannot represent natively; stringify only the
+    # export so the in-memory result remains unchanged.
+    stringify_nested(df).select(pl.all().cast(pl.String)).write_csv(path)
 
 def adjust_coords(pbp):
     # Given JSON or ESPN play-by-play, return coordinates normalized so the
@@ -287,7 +292,7 @@ def get_game_info(game_id, session=None):
             pass
         return data
 
-    #Retrieve data (parallelize independent endpoints to reduce wall time)
+    # Retrieve the independent game endpoints concurrently.
     if session is None:
         session = pooled_session()
     api_pbp = f"https://api-web.nhle.com/v1/gamecenter/{game_id}/play-by-play"
@@ -299,7 +304,7 @@ def get_game_info(game_id, session=None):
     shifts_cache = os.path.join(cache_root, "api", "shiftcharts", f"{game_id}.json")
     rr_cache = os.path.join(cache_root, "api", "right_rail", f"{game_id}.json")
 
-    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         pbp_future = executor.submit(_cached_get_json, session, api_pbp, pbp_cache)
         shifts_future = executor.submit(_cached_get_json, session, api_shifts, shifts_cache)
         rr_future = executor.submit(_cached_get_json, session, api_right_rail, rr_cache)
@@ -975,8 +980,7 @@ def combine_pbp(info,sources,session=None):
         espn_task = None
         json_type = 'nhl'
         # NHL JSON + NHL HTML (HTML is required for descriptions / legacy compatibility).
-        # Run in parallel since HTML fetch/parse is usually the slowest part.
-        with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             html_future = executor.submit(parse_html, info, session)
             json_future = executor.submit(parse_json, info)
             html_task = html_future.result()
@@ -1303,8 +1307,8 @@ def combine_shifts(info,sources,session=None):
     #JSON Prep
     roster = info['rosters']
 
-    #Quickly combine shifts data (home/away independent; parallelize for speed, especially when falling back to HTML shifts)
-    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
+    # Home and away shift processing are independent within this game.
+    with ThreadPoolExecutor(max_workers=2) as executor:
         away_future = executor.submit(parse_shift_events, info, False, session)
         home_future = executor.submit(parse_shift_events, info, True, session)
         away = away_future.result()
@@ -1383,8 +1387,8 @@ def combine_data(info,sources,session=None):
     if session is None:
         session = pooled_session()
 
-    # PBP (HTML fetch/parse) and shifts are independent; run in parallel to reduce wall time.
-    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
+    # PBP and shifts are independent within this game.
+    with ThreadPoolExecutor(max_workers=2) as executor:
         pbp_future = executor.submit(combine_pbp, info, sources, session)
         shifts_future = executor.submit(combine_shifts, info, sources, session)
         pbp = pbp_future.result()
@@ -1562,11 +1566,11 @@ def edge_stat_entry(entry, season, season_type, type, session=None):
 
         return edge
 
-    #Parallel fetch all categories
+    # Fetch all categories concurrently for this one player/team.
     dfs = []
-    with ThreadPoolExecutor(max_workers=min(http_tools.POOL_WORKERS, len(EDGE_CAT[type]))) as executor:
+    with ThreadPoolExecutor(max_workers=len(EDGE_CAT[type])) as executor:
         futures = [executor.submit(fetch_cat, cat) for cat in EDGE_CAT[type]]
-        for future in as_completed(futures):
+        for future in futures:
             df = future.result()
             if df is not None and not df.is_empty():
                 dfs.append(df)

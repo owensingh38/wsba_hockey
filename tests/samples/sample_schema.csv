@@ -22,7 +22,7 @@ event_id,Int64
 description,String
 event_reason,String
 penalty_type,String
-penalty_duration,Int64
+penalty_duration,String
 penalty_attribution,String
 event_team_abbr,String
 event_team_venue,String
@@ -36,9 +36,9 @@ shift_type,String
 event_player_1_name,String
 event_player_2_name,String
 event_player_3_name,String
-event_player_1_id,Int64
-event_player_2_id,Int64
-event_player_3_id,Int64
+event_player_1_id,String
+event_player_2_id,String
+event_player_3_id,String
 event_player_1_pos,String
 event_player_2_pos,String
 event_player_3_pos,String
