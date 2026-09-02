@@ -23,6 +23,19 @@ wsba.nhl_scrape_game(2024020918,split_shifts=False,remove=['game-end'])
 wsba.nhl_scrape_season(20242025,split_shifts=False,remove=['game-end'],local=True)
 ```
 
+### Reusing Sessions and Workers
+
+```python
+import wsba_hockey as wsba
+import wsba_hockey.tools.http as http
+
+http.POOL_WORKERS = 4
+
+with wsba.make_pooled_session() as session:
+    games = [2024020918, 2024020919]
+    pbp = [wsba.nhl_scrape_game(game, session=session) for game in games]
+```
+
 ### NHL Season Information
 
 ```python

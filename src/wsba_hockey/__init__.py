@@ -34,7 +34,9 @@ from wsba_hockey.wsba_main import (
     utility_get_unique
 )
 
-__version__ = "1.6.2"
+from wsba_hockey.tools.http import make_pooled_session
+
+__version__ = "1.7.0"
 
 from wsba_hockey.tools.globals import (
     A3Z_STRENGTH_FIXES,

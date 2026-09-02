@@ -1,13 +1,10 @@
 import numpy as np
-import pandas as pd
+import polars as pl
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 from pathlib import Path
 from functools import lru_cache
 from matplotlib.lines import Line2D
-from matplotlib.colors import LinearSegmentedColormap
 from hockey_rink import NHLRink, CircularImage
-from scipy.ndimage import gaussian_filter
 from wsba_hockey.tools.globals import EVENT_MARKERS, IMG_PATH, INFO_PATH, METRIC_EVENTS, STRENGTHS
 
 ## PLOTTING ##
@@ -82,15 +79,15 @@ class WSBAPlot:
 
 
 @lru_cache(maxsize=4)
-def load_teaminfo(info_path: str = INFO_PATH) -> pd.DataFrame:
-    return pd.read_csv(info_path)
+def load_teaminfo(info_path: str = INFO_PATH) -> pl.DataFrame:
+    return pl.read_csv(info_path)
 
 
-def team_primary_color_map(teaminfo: pd.DataFrame | None = None, *, info_path: str = INFO_PATH) -> dict[str, str]:
+def team_primary_color_map(teaminfo: pl.DataFrame | None = None, *, info_path: str = INFO_PATH) -> dict[str, str]:
     teaminfo = load_teaminfo(info_path) if teaminfo is None else teaminfo
-    if teaminfo is None or teaminfo.empty:
+    if teaminfo is None or teaminfo.is_empty():
         return {}
-    return dict(zip(teaminfo["wsba_id"].astype(str), teaminfo["primary_color"].astype(str)))
+    return dict(zip(teaminfo["wsba_id"].cast(pl.String).to_list(), teaminfo["primary_color"].cast(pl.String).to_list()))
 
 
 def _legend_handles(events: list[str], marker_dict: dict) -> list[Line2D]:
@@ -215,26 +212,26 @@ def _add_event_legend(
 
 
 def apply_primary_colors(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     color_map: dict[str, str],
     *,
     team_abbr_col: str = "event_team_abbr",
     season_col: str = "season",
     out_col: str = "color",
     fallback: str = "#1f77b4",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     if team_abbr_col not in df.columns or season_col not in df.columns:
-        df[out_col] = fallback
-        return df
+        return df.with_columns(pl.lit(fallback).alias(out_col))
 
-    seasons = pd.to_numeric(df[season_col], errors="coerce").astype("Int64").astype(str)
-    wsba_ids = df[team_abbr_col].astype(str).str.upper() + seasons
-    df[out_col] = wsba_ids.map(color_map).fillna(fallback)
-    return df
+    wsba_ids = (
+        pl.col(team_abbr_col).cast(pl.String).str.to_uppercase()
+        + pl.col(season_col).cast(pl.Int64, strict=False).cast(pl.String)
+    )
+    return df.with_columns(wsba_ids.replace(color_map, default=fallback).alias(out_col))
 
 
 def plot_events(
-    pbp: pd.DataFrame,
+    pbp: pl.DataFrame,
     events: list[str],
     title: str | None = None,
     marker_dict: dict | None = None,
@@ -248,21 +245,21 @@ def plot_events(
     plotter = WSBAPlot(display_range=display_range, rotation=rotation, figsize=figsize)
     ax = plotter.ax
 
-    if pbp.empty:
+    if pbp.is_empty():
         if title:
             ax.set_title(title)
         return plotter.fig
 
     if "size" in pbp.columns:
-        size_all = pbp["size"].to_numpy(copy=False)
+        size_all = pbp["size"].to_numpy()
     else:
         if "xG" in pbp.columns:
-            xg = pd.to_numeric(pbp["xG"], errors="coerce").fillna(0).to_numpy(copy=False)
+            xg = pbp["xG"].cast(pl.Float64, strict=False).fill_null(0).to_numpy()
             size_all = np.where(xg < 0.05, 20.0, xg * 400.0).astype(np.float32, copy=False)
         else:
             size_all = np.full(len(pbp), 20.0, dtype=np.float32)
 
-    event_type_arr = pbp["event_type"].to_numpy(copy=False)
+    event_type_arr = pbp["event_type"].to_numpy()
     if rotation is None:
         rotation = 0
     rot = float(rotation)
@@ -278,8 +275,8 @@ def plot_events(
         if not np.any(event_mask):
             continue
 
-        x = pbp.loc[event_mask, "x_adj"].to_numpy(copy=False)
-        y = pbp.loc[event_mask, "y_adj"].to_numpy(copy=False)
+        x = pbp.filter(pl.Series(event_mask))["x_adj"].to_numpy()
+        y = pbp.filter(pl.Series(event_mask))["y_adj"].to_numpy()
 
         ok = np.isfinite(x) & np.isfinite(y)
         if not np.any(ok):
@@ -295,9 +292,9 @@ def plot_events(
         sizes = size_all[event_mask][ok]
 
         if "color" in pbp.columns:
-            colors = pbp.loc[event_mask, "color"].to_numpy(copy=False)[ok]
+            colors = pbp.filter(pl.Series(event_mask))["color"].to_numpy()[ok]
         elif "event_team_venue" in pbp.columns:
-            venues = pbp.loc[event_mask, "event_team_venue"].to_numpy(copy=False)[ok]
+            venues = pbp.filter(pl.Series(event_mask))["event_team_venue"].to_numpy()[ok]
             colors = np.where(venues == "away", "#1f77b4", "#d62728")
         else:
             colors = "#1f77b4"
@@ -347,43 +344,42 @@ def prep_plot_data(
         from wsba_hockey.wsba_main import nhl_apply_xG
 
         pbp = nhl_apply_xG(pbp)
-        pbp["xG"] = np.where(pbp["xG"].isna(), 0, pbp["xG"])
+        pbp = pbp.with_columns(pl.col("xG").fill_null(0).alias("xG"))
 
-    pbp["x_plot"] = np.where(pbp["x_adj"] < 0, -pbp["y_adj"], pbp["y_adj"])
-    pbp["y_plot"] = np.abs(pbp["x_adj"])
-
-    pbp["strength_state_for"] = pbp["strength_state"]
-    pbp["strength_state_against"] = pbp["strength_state"].astype(str).str[::-1]
-
-    pbp["size"] = np.where(pbp["xG"] < 0.05, 20, pbp["xG"] * 400)
-    pbp["marker"] = pbp["event_type"].replace(marker_dict)
-
-    pbp["onice_for_id"] = np.where(pbp["home_team_abbr"] == pbp["event_team_abbr"], pbp["home_on_ice_id"], pbp["away_on_ice_id"])
-    pbp["onice_against_id"] = np.where(
-        pbp["away_team_abbr"] == pbp["event_team_abbr"], pbp["home_on_ice_id"], pbp["away_on_ice_id"]
-    )
-
-    pbp["onice_id"] = pbp["onice_for_id"].astype(str) + ";" + pbp["onice_against_id"].astype(str)
-    pbp["event_team_abbrs"] = pbp["event_team_abbr_for"] + ";" + pbp["event_team_abbr_against"]
+    pbp = pbp.with_columns([
+        pl.when(pl.col("x_adj") < 0).then(-pl.col("y_adj")).otherwise(pl.col("y_adj")).alias("x_plot"),
+        pl.col("x_adj").abs().alias("y_plot"),
+        pl.col("strength_state").alias("strength_state_for"),
+        pl.col("strength_state").cast(pl.String).str.reverse().alias("strength_state_against"),
+        pl.when(pl.col("xG") < 0.05).then(20).otherwise(pl.col("xG") * 400).alias("size"),
+        pl.col("event_type").replace(marker_dict, default=None).alias("marker"),
+        pl.when(pl.col("home_team_abbr") == pl.col("event_team_abbr")).then(pl.col("home_on_ice_id")).otherwise(pl.col("away_on_ice_id")).alias("onice_for_id"),
+        pl.when(pl.col("away_team_abbr") == pl.col("event_team_abbr")).then(pl.col("home_on_ice_id")).otherwise(pl.col("away_on_ice_id")).alias("onice_against_id"),
+    ]).with_columns([
+        (pl.col("onice_for_id").cast(pl.String) + ";" + pl.col("onice_against_id").cast(pl.String)).alias("onice_id"),
+        (pl.col("event_team_abbr_for") + ";" + pl.col("event_team_abbr_against")).alias("event_team_abbrs"),
+    ])
 
     season_types = _as_list(season_types)
     if season_types:
-        pbp = pbp.loc[pbp["season_type"].isin(season_types)]
+        pbp = pbp.filter(pl.col("season_type").is_in(season_types))
 
     strengths_norm = _normalize_strengths(strengths)
     if strengths != "all":
-        pbp = pbp.loc[
-            (pbp["strength_state_for"].isin(strengths_norm)) | (pbp["strength_state_against"].isin(strengths_norm))
-        ]
+        pbp = pbp.filter(
+            pl.col("strength_state_for").is_in(strengths_norm) | pl.col("strength_state_against").is_in(strengths_norm)
+        )
 
-    pbp["is_goal"] = (pbp["event_type"] == "goal").astype(int)
-    pbp["is_shot"] = pbp["event_type"].isin(METRIC_EVENTS["Shots"]).astype(int)
-    pbp["is_fenwick"] = pbp["event_type"].isin(METRIC_EVENTS["Fenwick"]).astype(int)
-    pbp["is_corsi"] = pbp["event_type"].isin(METRIC_EVENTS["Corsi"]).astype(int)
-    pbp["is_give"] = (pbp["event_type"] == "giveaway").astype(int)
-    pbp["is_take"] = (pbp["event_type"] == "takeaway").astype(int)
-    pbp["is_penalty"] = (pbp["event_type"] == "penalty").astype(int)
-    pbp["is_block"] = (pbp["event_type"] == "blocked-shot").astype(int)
-    pbp["is_hit"] = (pbp["event_type"] == "hit").astype(int)
+    pbp = pbp.with_columns([
+        (pl.col("event_type") == "goal").cast(pl.Int64).alias("is_goal"),
+        pl.col("event_type").is_in(METRIC_EVENTS["Shots"]).cast(pl.Int64).alias("is_shot"),
+        pl.col("event_type").is_in(METRIC_EVENTS["Fenwick"]).cast(pl.Int64).alias("is_fenwick"),
+        pl.col("event_type").is_in(METRIC_EVENTS["Corsi"]).cast(pl.Int64).alias("is_corsi"),
+        (pl.col("event_type") == "giveaway").cast(pl.Int64).alias("is_give"),
+        (pl.col("event_type") == "takeaway").cast(pl.Int64).alias("is_take"),
+        (pl.col("event_type") == "penalty").cast(pl.Int64).alias("is_penalty"),
+        (pl.col("event_type") == "blocked-shot").cast(pl.Int64).alias("is_block"),
+        (pl.col("event_type") == "hit").cast(pl.Int64).alias("is_hit"),
+    ])
 
     return pbp

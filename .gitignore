@@ -13,3 +13,4 @@ src/wsba_hockey/tools/game_pred.py
 docs/build/
 docs/source/_static/
 docs/source/_templates/
+.wsba_cache

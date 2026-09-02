@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wsba_hockey"
-version = "1.6.3"
+version = "1.7.0"
 authors = [
   { name="Owen Singh", email="owenbksingh@gmail.com" },
 ]
 description = "WeakSide Breakout's Python package for hockey data, primarily including National Hockey League schedule, play-by-play, roster, standings, and shift information."
 dependencies = [
     "numpy>=1.23",
-    "pandas>=2.0",
+    "polars>=1.0",
     "matplotlib>=3.7",
     "requests>=2.31",
     "scipy>=1.10",

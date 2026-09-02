@@ -3,10 +3,10 @@ import re
 import sys
 import time
 import operator
-import numpy as np
 from matplotlib.lines import Line2D
-from datetime import datetime, timedelta
+from datetime import timedelta
 from bs4 import BeautifulSoup, SoupStrainer
+from wsba_hockey.tools.http import get as http_get
 
 ## GLOBAL VARIABLES ##
 COL_MAP = {
@@ -1737,6 +1737,17 @@ def get_teams(soup):
     home_team = regex.findall(str(teams[7]))
 
     return [team, home_team[0]]
+
+def random_game_is_valid(game_id, session=None):
+    # Determine validity of randomly generated game id
+    try:
+        state = http_get(
+            f"https://api-web.nhle.com/v1/gamecenter/{game_id}/play-by-play",
+            session=session,
+        ).json().get('gameState')
+        return state != 'FUT'
+    except Exception:
+        return False
 
 GLOBAL_MODULE = 'wsba_hockey.tools.globals'
 

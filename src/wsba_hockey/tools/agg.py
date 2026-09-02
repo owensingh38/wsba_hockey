@@ -1,38 +1,31 @@
-import json
-import pandas as pd
-import numpy as np
 from functools import lru_cache
+
+import polars as pl
+
 from wsba_hockey.tools.globals import (
-    AGG_POST_METRICS,
-    BIO_STAT_COL,
-    FENWICK_EVENTS,
-    NON_FINAL_STATES,
-    NON_TOTALS,
-    OPS,
-    PER_SIXTY,
-    SHOT_TYPES,
-    SPECIAL_KEYS,
-    STRENGTH_MATCH,
+    AGG_POST_METRICS, BIO_STAT_COL, FENWICK_EVENTS, NON_FINAL_STATES,
+    NON_TOTALS, OPS, SHOT_TYPES, SPECIAL_KEYS,
 )
-
-## AGGREGATE FUNCTIONS ##
-# Provided in this file are functions vital to aggregating NHL play-by-play data into a wealth of statistics.
-
-#Load globals
-shot_types = SHOT_TYPES
-fenwick_events = FENWICK_EVENTS
-strengths_list = STRENGTH_MATCH
-per_sixty = PER_SIXTY
 
 @lru_cache(maxsize=8)
 def _read_csv_cached(path):
-    return pd.read_csv(path)
+    return pl.read_csv(path)
+
+
+def _flag(expr):
+    return expr.fill_null(False).cast(pl.Int64)
+
+
+def _aggregate(df, keys, mapping):
+    return df.group_by(keys, maintain_order=True).agg([
+        (pl.col(source).n_unique() if op == 'nunique' else pl.col(source).sum()).alias(name)
+        for name, (source, op) in mapping.items()
+    ])
+
 
 def process_stats(df, group, venue, game_strength, second_group):
-    #Determine columns
     team_col = f'{venue}_team_abbr'
     opp_col = f'{"home" if venue == "away" else "away"}_team_abbr'
-
     if group == 'skater':
         id_cols = [f'{venue}_on_{i}_id' for i in range(1, 7)]
         primary_cols = [f'{venue}_on_{i}_primary_fenwick_assist_probability' for i in range(1, 7)]
@@ -42,598 +35,263 @@ def process_stats(df, group, venue, game_strength, second_group):
         id_cols = [f'{venue}_goalie_id']
     else:
         id_cols = []
-
-    keep_cols = [
-        'season','game_id','strength_state','event_num',
-        team_col, opp_col, 'event_type', 'event_team_venue',
-        'event_team_abbr','ids_on','shift_type','event_length',
-        'zone_code','penalty_duration','penalty_type','short','xG'
-    ]
-
+    keep = ['season', 'game_id', 'strength_state', 'event_num', team_col, opp_col,
+            'event_type', 'event_team_venue', 'event_team_abbr', 'ids_on', 'shift_type',
+            'event_length', 'zone_code', 'penalty_duration', 'penalty_type', 'short', 'xG']
     if group == 'skater':
-        keep_cols += id_cols + primary_cols + secondary_cols + tertiary_cols
+        keep += id_cols + primary_cols + secondary_cols + tertiary_cols
     elif group == 'goalie':
-        keep_cols += id_cols
-
-    df = df[keep_cols].copy()
-
-    #Flip strength state (when necessary) and filter by game strength if not "all"
+        keep += id_cols
+    df = df.select(keep)
     if game_strength != 'all':
-        df['strength_state_for'] = np.where(
-            df['event_team_abbr'] == df[team_col],
-            df['strength_state'],
-            df['strength_state'].str[::-1]
-        )
-        df = df.loc[df['strength_state_for'].isin(game_strength)]
-
-    if group in ['skater', 'goalie']:
-        if group == 'skater':
-            stacked = []
-
-            for i in range(6):
-                temp = df.copy()
-                temp['player_id'] = temp[id_cols[i]]
-                temp['primary_fenwick_assist_probability'] = temp[primary_cols[i]]
-                temp['secondary_fenwick_assist_probability'] = temp[secondary_cols[i]]
-                temp['tertiary_fenwick_assist_probability'] = temp[tertiary_cols[i]]
-                stacked.append(temp)
-
-            df = pd.concat(stacked, ignore_index=True)
-
-            df = df.loc[df['player_id'] > 0]
-
-        if group == 'goalie':
-            df = df.rename(columns={id_cols[0]: 'player_id'})
-
-    #Remove shots that don't reach net
-    df['xG'] = np.where(df['short'] == 1, 0, df['xG'])
-    valid_mask = df['short'] == 0
-
-    event  = df['event_type']
-    zone = df['zone_code']
-    penalty_duration = df['penalty_duration']
-    penalty_type = df['penalty_type']
-    team_mask = df['event_team_abbr'] == df[team_col]
-    opp_mask  = df['event_team_abbr'] == df[opp_col]
-
-    df['expected_goals_for'] = ((team_mask & valid_mask) * df['xG']).astype(float)
-    df['expected_goals_against'] = ((opp_mask & valid_mask) * df['xG']).astype(float)
-    df['goals_for'] = ((event=='goal') & team_mask).astype(int)
-    df['goals_against'] = ((event=='goal') & opp_mask).astype(int)
-    df['shots_for'] = ((event.isin(['shot-on-goal','goal'])) & team_mask).astype(int)
-    df['shots_against'] = ((event.isin(['shot-on-goal','goal'])) & opp_mask).astype(int)
-    df['fenwick_for'] = ((event.isin(fenwick_events) & valid_mask) & team_mask).astype(int)
-    df['fenwick_against'] = ((event.isin(fenwick_events) & valid_mask) & opp_mask).astype(int)
-    df['corsi_for'] = ((event.isin(fenwick_events + ['blocked-shot'])) & team_mask).astype(int)
-    df['corsi_against'] = ((event.isin(fenwick_events + ['blocked-shot'])) & opp_mask).astype(int)
-    df['offensive_zone_faceoffs'] = ((event=='faceoff') & (((zone=='O') & team_mask) | ((zone=='D') & opp_mask))).astype(int)
-    df['neutral_zone_faceoffs'] = ((event=='faceoff') & (((zone=='N') & team_mask) | ((zone=='N') & opp_mask))).astype(int)
-    df['defensive_zone_faceoffs'] = ((event=='faceoff') & (((zone=='D') & team_mask) | ((zone=='O') & opp_mask))).astype(int)
-
+        df = df.with_columns(pl.when(pl.col('event_team_abbr') == pl.col(team_col)).then(pl.col('strength_state')).otherwise(pl.col('strength_state').cast(pl.String).str.reverse()).alias('strength_state_for')).filter(pl.col('strength_state_for').is_in(game_strength))
     if group == 'skater':
-        df['primary_fenwick_assists'] =  ((team_mask & valid_mask) * df['primary_fenwick_assist_probability']).astype(float)
-        df['secondary_fenwick_assists'] = ((team_mask & valid_mask) * df['secondary_fenwick_assist_probability']).astype(float)
-        df['tertiary_fenwick_assists'] = ((team_mask & valid_mask) * df['tertiary_fenwick_assist_probability']).astype(float)
-        df['primary_expected_assists'] = (df['primary_fenwick_assists'] * df['xG']).astype(float)
-        df['secondary_expected_assists'] = (df['secondary_fenwick_assists'] * df['xG']).astype(float)
+        # Turn the six on-ice slots into list columns and explode once.  This
+        # avoids six frame copies and six concatenation inputs.
+        stacked = [
+            'player_id',
+            'primary_fenwick_assist_probability',
+            'secondary_fenwick_assist_probability',
+            'tertiary_fenwick_assist_probability',
+        ]
+        df = df.with_columns([
+            pl.concat_list([pl.col(col) for col in id_cols]).alias(stacked[0]),
+            pl.concat_list([pl.col(col) for col in primary_cols]).alias(stacked[1]),
+            pl.concat_list([pl.col(col) for col in secondary_cols]).alias(stacked[2]),
+            pl.concat_list([pl.col(col) for col in tertiary_cols]).alias(stacked[3]),
+        ]).drop(id_cols + primary_cols + secondary_cols + tertiary_cols).explode(stacked).filter(pl.col('player_id') > 0)
+    elif group == 'goalie':
+        df = df.rename({id_cols[0]: 'player_id'})
 
-    if group == 'team':
-        df['hits_for'] = ((event=='hit') & team_mask).astype(int)
-        df['hits_against'] = ((event=='hit') & opp_mask).astype(int)
-        
-        df['penalties_for'] = ((event=='penalty') & team_mask).astype(int)
-        df['minor_penalties_for'] = ((event=='penalty') & (penalty_duration==2) & team_mask).astype(int)
-        df['major_penalties_for'] = ((event=='penalty') & (penalty_duration==5) & team_mask).astype(int)
-        df['fighting_penalties_for'] = ((event=='penalty') & (penalty_type=='fighting') & team_mask).astype(int)
-        df['penalty_minutes_for'] = df.loc[(event=='penalty') & team_mask, 'penalty_duration']
-        
-        df['penalties_against'] = ((event=='penalty') & opp_mask).astype(int)
-        df['minor_penalties_against'] = ((event=='penalty') & (penalty_duration==2) & opp_mask).astype(int)
-        df['major_penalties_against'] = ((event=='penalty') & (penalty_duration==5) & opp_mask).astype(int)
-        df['fighting_penalties_against'] = ((event=='penalty') & (penalty_type=='fighting') & opp_mask).astype(int)
-        df['penalty_minutes_against'] = df.loc[(event=='penalty') & opp_mask, 'penalty_duration']
-        
-        df['giveaways'] = ((event=='giveaway') & team_mask).astype(int)
-        df['takeaways'] = ((event=='takeaway') & team_mask).astype(int)
-        df['blocked_shots'] = df['corsi_against']-df['fenwick_against']
-    
-    #Determine the primary grouping
-    first_group = [team_col]
-    if group in ['skater', 'goalie']:
-        first_group.insert(0, 'player_id')
-        
-    agg_dict = {
-        'games_played': ('game_id','nunique'),
-        'time_on_ice': ('event_length','sum'),
-        'fenwick_for': ('fenwick_for', 'sum'),
-        'fenwick_against': ('fenwick_against', 'sum'),
-        'goals_for': ('goals_for', 'sum'),
-        'goals_against': ('goals_against', 'sum'),
-        'shots_for': ('shots_for', 'sum'),
-        'shots_against': ('shots_against', 'sum'),
-        'expected_goals_for': ('expected_goals_for', 'sum'),
-        'expected_goals_against': ('expected_goals_against', 'sum'),
-        'corsi_for': ('corsi_for','sum'),
-        'corsi_against': ('corsi_against','sum'),
-        'offensive_zone_faceoffs': ('offensive_zone_faceoffs','sum'),
-        'neutral_zone_faceoffs': ('neutral_zone_faceoffs','sum'),
-        'defensive_zone_faceoffs': ('defensive_zone_faceoffs','sum')
-    }
-
+    event, zone, duration = pl.col('event_type'), pl.col('zone_code'), pl.col('penalty_duration')
+    team = pl.col('event_team_abbr') == pl.col(team_col)
+    opponent = pl.col('event_team_abbr') == pl.col(opp_col)
+    valid = pl.col('short') == 0
+    df = df.with_columns([
+        pl.when(pl.col('short') == 1).then(0).otherwise(pl.col('xG')).alias('xG'),
+        pl.when(team & valid).then(pl.col('xG')).otherwise(0.0).alias('expected_goals_for'),
+        pl.when(opponent & valid).then(pl.col('xG')).otherwise(0.0).alias('expected_goals_against'),
+        _flag((event == 'goal') & team).alias('goals_for'), _flag((event == 'goal') & opponent).alias('goals_against'),
+        _flag(event.is_in(['shot-on-goal', 'goal']) & team).alias('shots_for'), _flag(event.is_in(['shot-on-goal', 'goal']) & opponent).alias('shots_against'),
+        _flag(event.is_in(FENWICK_EVENTS) & valid & team).alias('fenwick_for'), _flag(event.is_in(FENWICK_EVENTS) & valid & opponent).alias('fenwick_against'),
+        _flag(event.is_in(FENWICK_EVENTS + ['blocked-shot']) & team).alias('corsi_for'), _flag(event.is_in(FENWICK_EVENTS + ['blocked-shot']) & opponent).alias('corsi_against'),
+        _flag((event == 'faceoff') & (((zone == 'O') & team) | ((zone == 'D') & opponent))).alias('offensive_zone_faceoffs'),
+        _flag((event == 'faceoff') & (zone == 'N')).alias('neutral_zone_faceoffs'),
+        _flag((event == 'faceoff') & (((zone == 'D') & team) | ((zone == 'O') & opponent))).alias('defensive_zone_faceoffs'),
+    ])
     if group == 'skater':
-        agg_dict.update({
-            'primary_fenwick_assists': ('primary_fenwick_assists', 'sum'),
-            'secondary_fenwick_assists': ('secondary_fenwick_assists', 'sum'),
-            'tertiary_fenwick_assists': ('tertiary_fenwick_assists', 'sum'),
-            'primary_expected_assists': ('primary_expected_assists', 'sum'),
-            'secondary_expected_assists': ('secondary_expected_assists', 'sum')
-        })
-
+        df = df.with_columns([
+            pl.when(team & valid).then(pl.col('primary_fenwick_assist_probability')).otherwise(0.0).alias('primary_fenwick_assists'),
+            pl.when(team & valid).then(pl.col('secondary_fenwick_assist_probability')).otherwise(0.0).alias('secondary_fenwick_assists'),
+            pl.when(team & valid).then(pl.col('tertiary_fenwick_assist_probability')).otherwise(0.0).alias('tertiary_fenwick_assists'),
+        ]).with_columns([
+            pl.when(team & valid).then(pl.col('primary_fenwick_assist_probability') * pl.col('xG')).otherwise(0.0).alias('primary_expected_assists'),
+            pl.when(team & valid).then(pl.col('secondary_fenwick_assist_probability') * pl.col('xG')).otherwise(0.0).alias('secondary_expected_assists'),
+        ])
+    elif group == 'team':
+        df = df.with_columns([
+            _flag((event == 'hit') & team).alias('hits_for'), _flag((event == 'hit') & opponent).alias('hits_against'),
+            _flag((event == 'penalty') & team).alias('penalties_for'), _flag((event == 'penalty') & (duration == 2) & team).alias('minor_penalties_for'), _flag((event == 'penalty') & (duration == 5) & team).alias('major_penalties_for'), _flag((event == 'penalty') & (pl.col('penalty_type') == 'fighting') & team).alias('fighting_penalties_for'), pl.when((event == 'penalty') & team).then(duration).otherwise(0).alias('penalty_minutes_for'),
+            _flag((event == 'penalty') & opponent).alias('penalties_against'), _flag((event == 'penalty') & (duration == 2) & opponent).alias('minor_penalties_against'), _flag((event == 'penalty') & (duration == 5) & opponent).alias('major_penalties_against'), _flag((event == 'penalty') & (pl.col('penalty_type') == 'fighting') & opponent).alias('fighting_penalties_against'), pl.when((event == 'penalty') & opponent).then(duration).otherwise(0).alias('penalty_minutes_against'),
+            _flag((event == 'giveaway') & team).alias('giveaways'), _flag((event == 'takeaway') & team).alias('takeaways'),
+        ]).with_columns((pl.col('corsi_against') - pl.col('fenwick_against')).alias('blocked_shots'))
+    keys = [team_col] + (['player_id'] if group in ('skater', 'goalie') else []) + list(second_group)
+    mapping = {'games_played': ('game_id', 'nunique'), 'time_on_ice': ('event_length', 'sum'), **{c: (c, 'sum') for c in ['fenwick_for', 'fenwick_against', 'goals_for', 'goals_against', 'shots_for', 'shots_against', 'expected_goals_for', 'expected_goals_against', 'corsi_for', 'corsi_against', 'offensive_zone_faceoffs', 'neutral_zone_faceoffs', 'defensive_zone_faceoffs']}}
+    if group == 'skater':
+        mapping.update({c: (c, 'sum') for c in ['primary_fenwick_assists', 'secondary_fenwick_assists', 'tertiary_fenwick_assists', 'primary_expected_assists', 'secondary_expected_assists']})
     if group == 'team':
-        agg_dict.update({
-            'hits_for': ('hits_for','sum'),
-            'hits_against': ('hits_against','sum'),
-            'penalties_for': ('penalties_for','sum'),
-            'minor_penalties_for': ('minor_penalties_for','sum'),
-            'major_penalties_for': ('major_penalties_for','sum'),
-            'fighting_penalties_for': ('fighting_penalties_for','sum'),
-            'penalty_minutes_for': ('penalty_minutes_for','sum'),
-            'penalties_against': ('penalties_against','sum'),
-            'minor_penalties_against': ('minor_penalties_against','sum'),
-            'major_penalties_against': ('major_penalties_against','sum'),
-            'fighting_penalties_against': ('fighting_penalties_against','sum'),
-            'penalty_minutes_against': ('penalty_minutes_against','sum'),
-            'giveaways': ('giveaways','sum'),
-            'takeaways': ('takeaways','sum'),
-            'blocked_shots': ('blocked_shots','sum')
-        })
+        mapping.update({c: (c, 'sum') for c in ['hits_for', 'hits_against', 'penalties_for', 'minor_penalties_for', 'major_penalties_for', 'fighting_penalties_for', 'penalty_minutes_for', 'penalties_against', 'minor_penalties_against', 'major_penalties_against', 'fighting_penalties_against', 'penalty_minutes_against', 'giveaways', 'takeaways', 'blocked_shots']})
+    stats = _aggregate(df, keys, mapping).rename({team_col: 'team_abbr'})
+    return stats.drop([c for c in stats.columns if '_fenwick_assist_probability' in c], strict=False)
 
-    stats = df.groupby(first_group + second_group).agg(**agg_dict).reset_index()
 
-    return stats.rename(columns={team_col:"team_abbr"}).drop(columns=[col for col in stats.columns if '_fenwick_assist_probability' in col])
-
-def calc_indv(pbp,game_strength,second_group):
-    # Filter by game strength if not "all"
-    if game_strength != "all":
-        pbp = pbp.loc[pbp['strength_state'].isin(game_strength)]
-        
-    #Add second event-team column for necessary situations
-    pbp['event_team_abbr_2'] = np.where(pbp['event_team_abbr'].notna(),
-        np.where(pbp['event_team_abbr']==pbp['home_team_abbr'],pbp['away_team_abbr'],pbp['home_team_abbr']),np.nan)
-
-    #Change second event team to goal-scoring team for goal events
-    pbp['event_team_abbr_2'] = np.where(pbp['event_type']=='goal',pbp['event_team_abbr'],pbp['event_team_abbr_2'])
-
-    #Determine how to group
-    raw_group_1 = ['event_player_1_id','event_team_abbr']+second_group
-    raw_group_2 = ['event_player_2_id','event_team_abbr_2']+second_group
-    raw_group_3 = ['event_player_3_id','event_team_abbr']+second_group
-    clean_group = ['player_id','team_abbr']+second_group
-
-    #Add columns to sum on for player (if necessary)
-    pbp['is_goal'] = (pbp['event_type'] == 'goal').astype(int)
-    pbp['is_shot'] = pbp['event_type'].isin(['shot-on-goal','goal']).astype(int)
-    pbp['is_fenwick'] = pbp['event_type'].isin(fenwick_events).astype(int)
-    pbp['is_corsi'] = pbp['event_type'].isin(fenwick_events + ['blocked-shot']).astype(int)
-    pbp['is_block'] = ((pbp['event_type'] == 'blocked-shot')&(pbp['event_reason']!='teammate-blocked')).astype(int)
-    pbp['is_hit'] = (pbp['event_type'] == 'hit').astype(int)
-    pbp['is_giveaway'] = (pbp['event_type'] == 'giveaway').astype(int)
-    pbp['is_takeaway'] = (pbp['event_type'] == 'takeaway').astype(int)
-    pbp['is_penalty'] = (pbp['event_type'] == 'penalty').astype(int)
-    pbp['is_faceoff'] = (pbp['event_type'] == 'faceoff').astype(int)
-    pbp['is_minor'] = (pbp['penalty_duration'] == 2).astype(int)
-    pbp['is_major'] = (pbp['penalty_duration'] == 5).astype(int)
-    pbp['is_fighting'] = (pbp['penalty_type'] == 'fighting').astype(int)
-
-    #Remove shots that don't reach net
-    for col in ['is_fenwick', 'xG']:
-        pbp[col] = np.where(pbp['short']==1, 0, pbp[col])
-
-    #Play-by-play to generate stats from
-    agg_pbp = pbp.loc[pbp['event_type'].isin(["goal", "shot-on-goal", "missed-shot","blocked-shot",'hit','giveaway','takeaway','faceoff','penalty'])]
-
-    #First event player stats
-    ep1 = (
-        agg_pbp.groupby(raw_group_1).agg(
-            goals=('is_goal', 'sum'),
-            shots=('is_shot', 'sum'),
-            fenwick=('is_fenwick', 'sum'),
-            corsi=('is_corsi', 'sum'),
-            expected_goals=('xG', 'sum'),
-            hits_applied=('is_hit', 'sum'),
-            giveaways=('is_giveaway', 'sum'),
-            takeaways=('is_takeaway', 'sum'),
-            penalties_taken=('is_penalty', 'sum'),
-            minor_penalties_taken=('is_minor', 'sum'),
-            major_penalties_taken=('is_major', 'sum'),
-            fighting_penalties_taken=('is_fighting', 'sum'),
-            penalty_minutes_taken=('penalty_duration','sum'),
-            faceoff_wins=('is_faceoff', 'sum')
-        )
-    ).reset_index().rename(columns={'event_player_1_id': 'player_id', 'event_team_abbr': 'team_abbr'})
-
-    #Second event player stats
-    ep2 = (
-        agg_pbp.groupby(raw_group_2).agg(
-            primary_assists=('is_goal', 'sum'),
-            hits_received=('is_hit', 'sum'),
-            penalties_drawn=('is_penalty', 'sum'),
-            minor_penalties_drawn=('is_minor', 'sum'),
-            major_penalties_drawn=('is_major', 'sum'),
-            fighting_penalties_drawn=('is_fighting', 'sum'),
-            penalty_minutes_drawn=('penalty_duration', 'sum'),
-            faceoff_losses=('is_faceoff', 'sum'),
-            blocked_shots=('is_block', 'sum')
-        )
-    ).reset_index().rename(columns={'event_player_2_id': 'player_id', 'event_team_abbr_2': 'team_abbr'})
-
-    #Third event player stats
-    ep3 = (
-        agg_pbp.groupby(raw_group_3).agg(
-            secondary_assists=('is_goal', 'sum')
-        )
-    ).reset_index().rename(columns={'event_player_3_id': 'player_id', 'event_team_abbr': 'team_abbr'})
-    
-    indv = pd.merge(ep1,ep2,how='outer',on=clean_group)
-    indv = pd.merge(indv,ep3,how='outer',on=clean_group)
-
-    #Shot Types
-    for st in shot_types:
-        shot = (
-            agg_pbp.loc[agg_pbp['shot_type']==st].groupby(raw_group_1).agg(
-                goals=('is_goal', 'sum'),
-                shots=('is_shot', 'sum'),
-                fenwick=('is_fenwick', 'sum'),
-                corsi=('is_corsi', 'sum'),
-                expected_goals=('xG', 'sum'),
+def calc_indv(pbp, game_strength, second_group):
+    if game_strength != 'all':
+        pbp = pbp.filter(pl.col('strength_state').is_in(game_strength))
+    pbp = pbp.with_columns([
+        pl.when(pl.col('event_team_abbr').is_not_null()).then(pl.when(pl.col('event_team_abbr') == pl.col('home_team_abbr')).then(pl.col('away_team_abbr')).otherwise(pl.col('home_team_abbr'))).otherwise(None).alias('event_team_abbr_2'),
+        _flag(pl.col('event_type') == 'goal').alias('is_goal'), _flag(pl.col('event_type').is_in(['shot-on-goal', 'goal'])).alias('is_shot'), _flag(pl.col('event_type').is_in(FENWICK_EVENTS)).alias('is_fenwick'), _flag(pl.col('event_type').is_in(FENWICK_EVENTS + ['blocked-shot'])).alias('is_corsi'), _flag((pl.col('event_type') == 'blocked-shot') & (pl.col('event_reason') != 'teammate-blocked').fill_null(True)).alias('is_block'), _flag(pl.col('event_type') == 'hit').alias('is_hit'), _flag(pl.col('event_type') == 'giveaway').alias('is_giveaway'), _flag(pl.col('event_type') == 'takeaway').alias('is_takeaway'), _flag(pl.col('event_type') == 'penalty').alias('is_penalty'), _flag(pl.col('event_type') == 'faceoff').alias('is_faceoff'), _flag(pl.col('penalty_duration') == 2).alias('is_minor'), _flag(pl.col('penalty_duration') == 5).alias('is_major'), _flag(pl.col('penalty_type') == 'fighting').alias('is_fighting'),
+    ]).with_columns([pl.when(pl.col('event_type') == 'goal').then(pl.col('event_team_abbr')).otherwise(pl.col('event_team_abbr_2')).alias('event_team_abbr_2'), pl.when(pl.col('short') == 1).then(0).otherwise(pl.col('is_fenwick')).alias('is_fenwick'), pl.when(pl.col('short') == 1).then(0).otherwise(pl.col('xG')).alias('xG')])
+    events = pbp.filter(pl.col('event_type').is_in(['goal', 'shot-on-goal', 'missed-shot', 'blocked-shot', 'hit', 'giveaway', 'takeaway', 'faceoff', 'penalty']))
+    first = {'goals': ('is_goal', 'sum'), 'shots': ('is_shot', 'sum'), 'fenwick': ('is_fenwick', 'sum'), 'corsi': ('is_corsi', 'sum'), 'expected_goals': ('xG', 'sum'), 'hits_applied': ('is_hit', 'sum'), 'giveaways': ('is_giveaway', 'sum'), 'takeaways': ('is_takeaway', 'sum'), 'penalties_taken': ('is_penalty', 'sum'), 'minor_penalties_taken': ('is_minor', 'sum'), 'major_penalties_taken': ('is_major', 'sum'), 'fighting_penalties_taken': ('is_fighting', 'sum'), 'penalty_minutes_taken': ('penalty_duration', 'sum'), 'faceoff_wins': ('is_faceoff', 'sum')}
+    second = {'primary_assists': ('is_goal', 'sum'), 'hits_received': ('is_hit', 'sum'), 'penalties_drawn': ('is_penalty', 'sum'), 'minor_penalties_drawn': ('is_minor', 'sum'), 'major_penalties_drawn': ('is_major', 'sum'), 'fighting_penalties_drawn': ('is_fighting', 'sum'), 'penalty_minutes_drawn': ('penalty_duration', 'sum'), 'faceoff_losses': ('is_faceoff', 'sum'), 'blocked_shots': ('is_block', 'sum')}
+    clean = ['player_id', 'team_abbr'] + list(second_group)
+    ep1 = _aggregate(events, ['event_player_1_id', 'event_team_abbr'] + list(second_group), first).rename({'event_player_1_id': 'player_id', 'event_team_abbr': 'team_abbr'}).with_columns(pl.col('player_id').cast(pl.Int64, strict=False))
+    ep2 = _aggregate(events, ['event_player_2_id', 'event_team_abbr_2'] + list(second_group), second).rename({'event_player_2_id': 'player_id', 'event_team_abbr_2': 'team_abbr'}).with_columns(pl.col('player_id').cast(pl.Int64, strict=False))
+    ep3 = _aggregate(events, ['event_player_3_id', 'event_team_abbr'] + list(second_group), {'secondary_assists': ('is_goal', 'sum')}).rename({'event_player_3_id': 'player_id', 'event_team_abbr': 'team_abbr'}).with_columns(pl.col('player_id').cast(pl.Int64, strict=False))
+    indv = ep1.join(ep2, on=clean, how='full', coalesce=True).join(ep3, on=clean, how='full', coalesce=True)
+    shot_mapping = {k: v for k, v in first.items() if k in ('goals', 'shots', 'fenwick', 'corsi', 'expected_goals')}
+    # Aggregate all shot types in one group-by.  The previous implementation
+    # scanned and joined the event frame once per shot type.
+    shot_keys = ['event_player_1_id', 'event_team_abbr'] + list(second_group)
+    shot_exprs = []
+    for shot_type in SHOT_TYPES:
+        prefix = shot_type.replace('-', '_')
+        for name, (source, _) in shot_mapping.items():
+            shot_exprs.append(
+                pl.when(pl.col('shot_type') == shot_type)
+                .then(pl.col(source))
+                .otherwise(0)
+                .sum()
+                .alias(f'{prefix}_{name}')
             )
-        ).reset_index().rename(columns={'event_player_1_id': 'player_id', 'event_team_abbr': 'team_abbr'})
+    shots = events.filter(pl.col('shot_type').is_in(SHOT_TYPES)).group_by(shot_keys, maintain_order=True).agg(shot_exprs)
+    shots = shots.rename({'event_player_1_id': 'player_id', 'event_team_abbr': 'team_abbr'}).with_columns(pl.col('player_id').cast(pl.Int64, strict=False))
+    indv = indv.join(shots, on=clean, how='full', coalesce=True)
+    indv = indv.with_columns([pl.col(c).fill_null(0) for c in ['goals', 'primary_assists', 'secondary_assists', 'penalties_taken', 'penalties_drawn', 'faceoff_wins', 'faceoff_losses'] if c in indv.columns])
+    return indv.with_columns([(pl.col('goals') + pl.col('primary_assists')).alias('primary_points'), (pl.col('goals') + pl.col('primary_assists') + pl.col('secondary_assists')).alias('points')])
 
-        st = st.replace('-','_')
 
-        shot = shot.rename(columns={
-            'goals':f'{st}_goals',
-            'shots':f'{st}_shots',
-            'fenwick':f'{st}_fenwick',
-            'corsi':f'{st}_corsi',
-            'expected_goals':f'{st}_expected_goals',
-        })
-        indv = pd.merge(indv,shot,how='outer',on=clean_group)
+def _combined(pbp, group, game_strength, second_group):
+    frames = [process_stats(pbp, group, venue, game_strength, second_group) for venue in ('away', 'home')]
+    if group == 'skater':
+        keys = ['player_id', 'team_abbr', 'season'] + (['game_id'] if 'game_id' in second_group else [])
+    elif group == 'goalie':
+        keys = ['player_id', 'team_abbr'] + list(second_group)
+    else:
+        keys = ['team_abbr'] + list(second_group)
+    cols = [c for c in frames[0].columns if c not in keys]
+    out = _aggregate(pl.concat(frames, how='vertical_relaxed'), keys, {c: (c, 'sum') for c in cols})
+    if group == 'skater':
+        out = out.with_columns([(pl.col('primary_fenwick_assists') + pl.col('secondary_fenwick_assists')).alias('fenwick_assists'), (pl.col('primary_expected_assists') + pl.col('secondary_expected_assists')).alias('expected_assists')])
+    return out.with_columns((pl.col('expected_goals_against') - pl.col('goals_against')).alias('goals_saved_above_expected'))
 
-    indv[['goals','primary_assists','secondary_assists','penalties_taken','penalties_drawn','faceoff_wins','faceoff_losses']] = indv[['goals','primary_assists','secondary_assists','penalties_taken','penalties_drawn','faceoff_wins','faceoff_losses']].fillna(0)
 
-    indv['primary_points'] = indv['goals'] + indv['primary_assists']
-    indv['points'] = indv['primary_points'] + indv['secondary_assists']
-    
-    return indv
+def calc_onice(pbp, game_strength, second_group):
+    return _combined(pbp, 'skater', game_strength, second_group)
 
-def calc_onice(pbp,game_strength,second_group):    
-    home_stats = process_stats(pbp, 'skater', 'home', game_strength, second_group)
-    away_stats = process_stats(pbp, 'skater', 'away', game_strength, second_group)
 
-    onice_stats = pd.concat([home_stats, away_stats]).groupby(
-        ['player_id','team_abbr','season'] + (['game_id'] if 'game_id' in second_group else [])
-    ).agg(
-        games_played=('games_played','sum'),
-        time_on_ice=('time_on_ice','sum'),
-        fenwick_for=('fenwick_for', 'sum'),
-        fenwick_against=('fenwick_against', 'sum'),
-        goals_for=('goals_for', 'sum'),
-        goals_against=('goals_against', 'sum'),
-        shots_for=('shots_for', 'sum'),
-        shots_against=('shots_against', 'sum'),
-        expected_goals_for=('expected_goals_for', 'sum'),
-        expected_goals_against=('expected_goals_against', 'sum'),
-        corsi_for=('corsi_for','sum'),
-        corsi_against=('corsi_against','sum'),
-        offensive_zone_faceoffs=('offensive_zone_faceoffs','sum'),
-        neutral_zone_faceoffs=('neutral_zone_faceoffs','sum'),
-        defensive_zone_faceoffs=('defensive_zone_faceoffs','sum'),
-        primary_fenwick_assists=('primary_fenwick_assists', 'sum'),
-        secondary_fenwick_assists=('secondary_fenwick_assists', 'sum'),
-        tertiary_fenwick_assists=('tertiary_fenwick_assists', 'sum'),
-        primary_expected_assists=('primary_expected_assists', 'sum'),
-        secondary_expected_assists=('secondary_expected_assists', 'sum')
-    ).reset_index()
+def calc_team(pbp, game_strength, second_group):
+    return _combined(pbp, 'team', game_strength, second_group)
 
-    onice_stats['fenwick_assists'] = onice_stats['primary_fenwick_assists']+onice_stats['secondary_fenwick_assists']
-    onice_stats['expected_assists'] = onice_stats['primary_expected_assists']+onice_stats['secondary_expected_assists']
-    onice_stats['goals_saved_above_expected'] = onice_stats['expected_goals_against'] - onice_stats['goals_against']
-    
-    return onice_stats
 
-def calc_team(pbp,game_strength,second_group):
-    teams = []
-    for venue in ['away', 'home']:
-        stats = process_stats(
-            pbp,
-            'team',
-            venue,
-            game_strength,
-            second_group
-        )
-        teams.append(stats)
+def calc_goalie(pbp, game_strength, second_group):
+    return _combined(pbp, 'goalie', game_strength, second_group)
 
-    onice_stats = pd.concat(teams).groupby(
-        ['team_abbr'] + second_group
-    ).agg(
-        games_played=('games_played','sum'),
-        time_on_ice=('time_on_ice','sum'),
-        fenwick_for=('fenwick_for', 'sum'),
-        fenwick_against=('fenwick_against', 'sum'),
-        goals_for=('goals_for', 'sum'),
-        goals_against=('goals_against', 'sum'),
-        shots_for=('shots_for','sum'),
-        shots_against=('shots_against','sum'),
-        expected_goals_for=('expected_goals_for', 'sum'),
-        expected_goals_against=('expected_goals_against', 'sum'),
-        corsi_for=('corsi_for','sum'),
-        corsi_against=('corsi_against','sum'),
-        offensive_zone_faceoffs=('offensive_zone_faceoffs','sum'),
-        neutral_zone_faceoffs=('neutral_zone_faceoffs','sum'),
-        defensive_zone_faceoffs=('defensive_zone_faceoffs','sum'),
-        hits_for=('hits_for','sum'),
-        hits_against=('hits_against','sum'),
-        penalties_for=('penalties_for','sum'),
-        minor_penalties_for=('minor_penalties_for','sum'),
-        major_penalties_for=('major_penalties_for','sum'),
-        fighting_penalties_for=('fighting_penalties_for','sum'),
-        penalty_minutes_for=('penalty_minutes_for','sum'),
-        penalties_against=('penalties_against','sum'),
-        minor_penalties_against=('minor_penalties_against','sum'),
-        major_penalties_against=('major_penalties_against','sum'),
-        fighting_penalties_against=('fighting_penalties_against','sum'),
-        penalty_minutes_against=('penalty_minutes_against','sum'),
-        giveaways=('giveaways','sum'),
-        takeaways=('takeaways','sum'),
-        blocked_shots=('blocked_shots','sum')
-    ).reset_index()
-
-    onice_stats['goals_saved_above_expected'] = onice_stats['expected_goals_against'] - onice_stats['goals_against']
-
-    return onice_stats
-
-def calc_goalie(pbp,game_strength,second_group):
-    teams = []
-    for venue in ['away', 'home']:
-        stats = process_stats(
-            pbp,
-            'goalie',
-            venue,
-            game_strength,
-            second_group
-        )
-        teams.append(stats)
-
-    onice_stats = pd.concat(teams).groupby(
-        ['player_id','team_abbr'] + second_group
-    ).agg(
-        games_played=('games_played','sum'),
-        time_on_ice=('time_on_ice','sum'),
-        fenwick_for=('fenwick_for', 'sum'),
-        fenwick_against=('fenwick_against', 'sum'),
-        goals_for=('goals_for', 'sum'),
-        goals_against=('goals_against', 'sum'),
-        shots_for=('shots_for','sum'),
-        shots_against=('shots_against','sum'),
-        expected_goals_for=('expected_goals_for', 'sum'),
-        expected_goals_against=('expected_goals_against', 'sum'),
-        corsi_for=('corsi_for','sum'),
-        corsi_against=('corsi_against','sum'),
-        offensive_zone_faceoffs=('offensive_zone_faceoffs','sum'),
-        neutral_zone_faceoffs=('neutral_zone_faceoffs','sum'),
-        defensive_zone_faceoffs=('defensive_zone_faceoffs','sum')
-    ).reset_index()
-
-    onice_stats['goals_saved_above_expected'] = onice_stats['expected_goals_against'] - onice_stats['goals_against']
-    
-    return onice_stats
 
 def rank_stats(df, rates=True, comparison=True, group_by=None):
-    #Generate per sixty columns for raw totals and percentile columns for per sixty statss
-    try:
-        df['head_position'] = np.where(df['position'].isin(['C','L','R']), 'F', df['position'])
-    except KeyError:
-        df['head_position'] = 'team'
-
-    #For obvious reasons, some columns in group_by can't be used to calculate percentiles
-    if group_by:
-        group_by = [col for col in group_by if col not in ['player_id', 'player_name', 'position', 'team_abbr']]
-    else:
-        group_by = []
-
-    group_by.append('head_position')
-
-    #Skip if no data from this function is desired
+    base_columns = list(df.columns)
+    df = df.with_columns(
+        (
+            pl.when(pl.col('position').is_in(['C', 'L', 'R']))
+            .then(pl.lit('F'))
+            .otherwise(pl.col('position'))
+            .fill_null(0)
+            if 'position' in df.columns else pl.lit('team')
+        ).alias('head_position')
+    )
+    groups = [c for c in (group_by or []) if c not in ['player_id', 'player_name', 'position', 'team_abbr']] + ['head_position']
     if not rates and not comparison:
-        return df.drop(columns=['head_position'])
-    else:
-        for stat in df.columns:
-            if stat not in BIO_STAT_COL + ['player_id', 'season', 'time_on_ice', 'position', 'position_group'] \
-            and pd.api.types.is_numeric_dtype(df[stat]):
+        return df.drop('head_position')
+    rate_exprs = []
+    percentile_specs = []
+    generated_order = []
+    for stat in list(df.columns):
+        if stat in BIO_STAT_COL + ['player_id', 'season', 'time_on_ice', 'position', 'position_group'] or not df[stat].dtype.is_numeric():
+            continue
+        penalty = 'penalties' in stat or 'penalty_minutes' in stat
+        good = 'drawn' in stat or stat.endswith('_against')
+        invert = ('against' in stat and not (penalty and stat.endswith('_against'))) or (penalty and not good) or stat == 'giveaways'
+        if not any(s in stat for s in NON_TOTALS):
+            per = f'{stat}_per_sixty'
+            if rates:
+                rate_exprs.append((pl.col(stat) / pl.col('time_on_ice') * 60).alias(per))
+                generated_order.append(per)
+                if comparison:
+                    percentile_specs.append((per, invert))
+                    generated_order.append(f'{per}_percentile')
+        if comparison and any(s in stat for s in SPECIAL_KEYS):
+            percentile_specs.append((stat, invert))
+            generated_order.append(f'{stat}_percentile')
+    if rate_exprs:
+        df = df.with_columns(rate_exprs)
+    if comparison:
+        df = df.with_columns([
+            ((1 - pl.col(stat).rank('average').over(groups) / pl.col(stat).count().over(groups)) if invert else (pl.col(stat).rank('average').over(groups) / pl.col(stat).count().over(groups))).alias(f'{stat}_percentile')
+            for stat, invert in percentile_specs
+            if stat in df.columns or any(expr.meta.output_name() == stat for expr in rate_exprs)
+        ])
+    if generated_order:
+        df = df.select(base_columns + ['head_position'] + [column for column in generated_order if column in df.columns])
+    return df.drop('head_position')
 
-                is_penalty_stat = ('penalties' in stat) or ('penalty_minutes' in stat)
-                is_penalty_good = ('drawn' in stat) or stat.endswith('_against')
 
-                invert = (
-                    ('against' in stat and not (is_penalty_stat and stat.endswith('_against')))
-                    or (is_penalty_stat and not is_penalty_good)
-                    or stat == 'giveaways'
-                )
+def _metric_expr(expr, columns):
+    return eval(expr, {'__builtins__': {}}, {c: pl.col(c) for c in columns})
 
-                #Ensure evaluated stats are raw totals
-                if not any(s in stat for s in NON_TOTALS):
-                    try:
-                        if rates:
-                            per_sixty = f'{stat}_per_sixty'
-                            df[per_sixty] = (df[stat] / df['time_on_ice']) * 60
-                        if comparison:
-                            ranks = df.groupby(group_by)[per_sixty].rank(pct=True)
-                            df[f'{per_sixty}_percentile'] = 1 - ranks if invert else ranks
-                    except:
-                        pass
-                    
-                if any(s in stat for s in SPECIAL_KEYS):
-                    if comparison:
-                        ranks = df.groupby(group_by)[stat].rank(pct=True)
-                        df[f'{stat}_percentile'] = 1 - ranks if invert else ranks
-
-        return df.drop(columns=['head_position'])
 
 def extra_calc(df, metrics):
-    #Calculate additional metrics with raw totals in an aggregated stats dataframe
-
-    #Most dataframes will not include every column performed on so the metrics and their calculations will be checked and passed if it cannot be calculated with the available data
-    #Metrics in "AGG_POST_METRICS" are organized in a tuple such as:
-    #(METRIC, NUMERATOR OPERATION(S), DENOMINATOR OPERATION(S))
-    for new_col, num_expr, denom_expr in AGG_POST_METRICS+metrics:
+    for new_col, num_expr, denom_expr in AGG_POST_METRICS + metrics:
         try:
-            num = df.eval(num_expr) if num_expr in df.columns or any(op in num_expr for op in '+-*/') else None
-            denom = df.eval(denom_expr) if denom_expr in df.columns or (denom_expr and any(op in denom_expr for op in '+-*/')) else None
-
-            if num is not None:
-                if denom is not None:
-                    df[new_col] = (num / denom.replace(0, np.nan)).fillna(0)
-                else:
-                    df[new_col] = num.fillna(0)
-
-        except (KeyError, NameError):
+            if not (num_expr in df.columns or any(op in num_expr for op in '+-*/')):
+                continue
+            num = _metric_expr(num_expr, df.columns)
+            if denom_expr and (denom_expr in df.columns or any(op in denom_expr for op in '+-*/')):
+                expr = (num / _metric_expr(denom_expr, df.columns).replace(0, None)).fill_null(0)
+            else:
+                expr = num.fill_null(0)
+            df = df.with_columns(expr.alias(new_col))
+        except (KeyError, NameError, SyntaxError):
             pass
-
     return df
-    
-def apply_rosters(df,group,schedule_path,roster_path):
-    #Apply roster information to stats dataframe
 
-    #Roster data for teams is result for each game
+
+def apply_rosters(df, group, schedule_path, roster_path):
     if group == 'team':
-        schedule = _read_csv_cached(schedule_path).copy()
-        
-        #Only want finished games for standing stats
-        schedule = schedule.loc[~schedule['game_state'].isin(NON_FINAL_STATES)]
-
-        #Add cumulative cols
-        schedule['home_win'] = (schedule['home_score'] > schedule['away_score']).astype(int)
-        schedule['away_win'] = (schedule['away_score'] > schedule['home_score']).astype(int)
-        schedule['regulation'] = (schedule['period_type_last']=='REG').astype(int)
-        schedule['overtime'] = (schedule['period_type_last']=='OT').astype(int)
-        schedule['shootout'] = (schedule['period_type_last']=='SO').astype(int)
-
-        dfs = []
-        for venue in ['home','away']:
-            standing = schedule[['game_id',f'{venue}_team_abbr',f'{venue}_win','regulation','overtime','shootout']].copy()
-            for state in ['regulation','overtime','shootout']:
-                standing[f'{state}_wins'] = np.where(standing[state]==1, standing[f'{venue}_win'], 0)
-                standing[f'{state}_losses'] = np.where(standing[state]==1, 1-standing[f'{venue}_win'], 0)
-
-            dfs.append(standing.drop(columns=[f'{venue}_win','regulation','overtime','shootout']).rename(columns={f'{venue}_team_abbr':'team_abbr'}))
-
-        standing_stats = pd.concat(dfs)
-
-        complete = pd.merge(df, standing_stats, how='left')
-
-        #Add WSBA ID
-        complete['wsba_id'] = complete['team_abbr']+complete['season'].astype(str)
-
-    else:
-        #Import rosters and player info
-        rosters = _read_csv_cached(roster_path).copy()
-        names = rosters[['player_id','player_name',
-                            'headshot','position','handedness',
-                            'height_in','weight_lbs',
-                            'birth_date','birth_country']].drop_duplicates(subset=['player_id'],keep='last')
-        
-        df['player_id'] = df['player_id'].astype(int)
-        names['player_id'] = names['player_id'].astype(int)
-
-        remove = [col for col in df.columns.intersection(names.columns) if col != 'player_id']
-        
-        #Add names
-        complete = pd.merge(df.drop(remove, errors='ignore'),names,how='left')
-
-        # Add player age
-        complete['birth_date'] = pd.to_datetime(complete['birth_date'])
-        complete['season_year'] = complete['season'].astype(str).str[4:8].astype(int)
-        complete['age'] = complete['season_year'] - complete['birth_date'].dt.year
-
-        # Find player headshot
-        complete['headshot'] = 'https://assets.nhle.com/mugs/nhl/' + complete['season'].astype(str) + '/' + complete['team_abbr'].astype(str) + '/' + complete['player_id'].astype(int).astype(str) + '.png'
-
-        #Add WSBA ID
-        complete['wsba_id'] = complete['player_id'].astype(str).str.replace('.0','') + complete['season'].astype(str) + complete['team_abbr'].astype(str)
-
-        # Remove goaltenders from skater dataframes
-        if group == 'skater':
-            complete = complete.loc[complete['position'] != 'G']
-        elif group == 'game_score':
-            complete = complete.loc[(complete['position'] != 'G') | ((complete['position'] == 'G') & (complete['points'].isna()))]
-        
-    #Return dataframe with stats info
+        schedule = _read_csv_cached(schedule_path).filter(~pl.col('game_state').is_in(NON_FINAL_STATES)).with_columns([(pl.col('home_score') > pl.col('away_score')).cast(pl.Int64).alias('home_win'), (pl.col('away_score') > pl.col('home_score')).cast(pl.Int64).alias('away_win'), (pl.col('period_type_last') == 'REG').cast(pl.Int64).alias('regulation'), (pl.col('period_type_last') == 'OT').cast(pl.Int64).alias('overtime'), (pl.col('period_type_last') == 'SO').cast(pl.Int64).alias('shootout')])
+        frames = []
+        for venue in ('home', 'away'):
+            standing = schedule.select(['game_id', f'{venue}_team_abbr', f'{venue}_win', 'regulation', 'overtime', 'shootout'])
+            states = ('regulation', 'overtime', 'shootout')
+            standing = standing.with_columns([
+                expression
+                for state in states
+                for expression in (
+                    pl.when(pl.col(state) == 1).then(pl.col(f'{venue}_win')).otherwise(0).alias(f'{state}_wins'),
+                    pl.when(pl.col(state) == 1).then(1 - pl.col(f'{venue}_win')).otherwise(0).alias(f'{state}_losses'),
+                )
+            ])
+            frames.append(standing.drop([f'{venue}_win', 'regulation', 'overtime', 'shootout']).rename({f'{venue}_team_abbr': 'team_abbr'}))
+        return df.join(pl.concat(frames, how='vertical_relaxed'), on=['game_id', 'team_abbr'], how='left').with_columns((pl.col('team_abbr') + pl.col('season').cast(pl.String)).alias('wsba_id'))
+    rosters = _read_csv_cached(roster_path)
+    names = rosters.select(['player_id', 'player_name', 'headshot', 'position', 'handedness', 'height_in', 'weight_lbs', 'birth_date', 'birth_country']).unique('player_id', keep='last')
+    df = df.with_columns(pl.col('player_id').cast(pl.Int64, strict=False))
+    names = names.with_columns(pl.col('player_id').cast(pl.Int64, strict=False))
+    remove = [c for c in df.columns if c in names.columns and c != 'player_id']
+    complete = df.drop(remove, strict=False).join(names, on='player_id', how='left').with_columns([pl.col('birth_date').cast(pl.String).str.to_date(strict=False).alias('birth_date'), pl.col('season').cast(pl.String).str.slice(4, 4).cast(pl.Int64, strict=False).alias('season_year')]).with_columns([(pl.col('season_year') - pl.col('birth_date').dt.year()).alias('age'), ('https://assets.nhle.com/mugs/nhl/' + pl.col('season').cast(pl.String) + '/' + pl.col('team_abbr').cast(pl.String) + '/' + pl.col('player_id').cast(pl.Int64, strict=False).cast(pl.String) + '.png').alias('headshot'), (pl.col('player_id').cast(pl.String) + pl.col('season').cast(pl.String) + pl.col('team_abbr').cast(pl.String)).alias('wsba_id')])
+    if group == 'skater':
+        # Keep rows with missing roster positions because null is not ``'G'``.
+        complete = complete.filter(pl.col('position').is_null() | (pl.col('position') != 'G'))
+    elif group == 'game_score':
+        complete = complete.filter(pl.col('position').is_null() | (pl.col('position') != 'G') | pl.col('points').is_null())
     return complete
 
-def apply_params(df, group_by, params, stage='before'):
-    mask = pd.Series(True, index=df.index)
 
+def apply_params(df, group_by, params, stage='before'):
     for col, spec in params.items():
         op = spec[0]
-
-        if spec[-1] in ('before', 'after'):
-            timing = spec[-1]
-            vals = spec[1:-1]
-        else:
-            timing = 'before'
-            vals = spec[1:]
-
+        timing = spec[-1] if spec[-1] in ('before', 'after') else 'before'
+        vals = list(spec[1:-1] if spec[-1] in ('before', 'after') else spec[1:])
         if len(vals) == 1 and isinstance(vals[0], (list, tuple)):
             vals = list(vals[0])
-
         if timing != stage:
             continue
-
-        target_series = df[col]
-        
         if op == 'last':
-            n = vals[0]
-
-            sort_cols = group_by + [col] if isinstance(group_by, list) else [group_by, col]
-            df = df.sort_values(sort_cols)
-
-            mask = (
-                df.groupby(group_by, group_keys=False)[col]
-                .transform(lambda s: pd.Series(
-                    s.index.isin(s.tail(n).index),
-                    index=s.index
-                ))
-            )
-
-            df = df.loc[mask.fillna(False)]
+            keys = group_by if isinstance(group_by, list) else [group_by]
+            df = df.sort(keys + [col]).with_columns(pl.int_range(0, pl.len()).alias('__row'))
+            df = df.with_columns(pl.col('__row').cum_count().over(keys).reverse().alias('__keep')).filter(pl.col('__keep') <= vals[0]).drop(['__row', '__keep'])
         else:
+            target = pl.col(col)
             if 'date' in col.lower():
-                target_series = pd.to_datetime(target_series, errors='coerce')
-                vals = [pd.to_datetime(v) for v in vals]
-
-            mask = OPS[op](target_series, *vals)
-            df = df.loc[mask.fillna(False)]
-
+                target = target.cast(pl.String).str.to_datetime(strict=False)
+                vals = [pl.Series([v]).str.to_datetime(strict=False).item() for v in vals]
+            if op == 'between':
+                mask = target.is_between(vals[0], vals[1])
+            elif op == 'in':
+                mask = target.is_in(vals)
+            elif op == 'not in':
+                mask = ~target.is_in(vals)
+            else:
+                mask = OPS[op](target, *vals)
+            df = df.filter(mask.fill_null(False))
     return df
-
-def concat_col_values(s):
-    #Numeric values will show range, strings will show all values
-
-    is_num = pd.api.types.is_numeric_dtype(s)
-    is_date = pd.api.types.is_datetime64_any_dtype(s)
-
-    if (is_num or is_date) and s.name not in ['game_id', 'age', 'player_id', 'season_type']:
-        s_min, s_max = s.min(), s.max()
-        
-        if s_min != s_max:
-            if is_date:
-                return f"{s_min.strftime('%Y-%m-%d')} - {s_max.strftime('%Y-%m-%d')}"
-            return f"{s_min} - {s_max}"
-        
-    return ", ".join(pd.unique(s.astype(str)))
-
-def sum_unique_games(series, games_df_ref, col_name):
-    group_df = games_df_ref.loc[series.index]
-    
-    return group_df.drop_duplicates(subset='games_played')[col_name].sum()

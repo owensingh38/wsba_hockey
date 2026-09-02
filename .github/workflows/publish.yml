@@ -18,7 +18,45 @@ permissions:
   id-token: write
 
 jobs:
+  build-distributions:
+    name: Build distributions (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            os: windows-latest
+            artifact: wsba_hockey-windows
+          - platform: linux
+            os: ubuntu-latest
+            artifact: wsba_hockey-linux
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+
   pypi:
+    needs: build-distributions
     runs-on: ubuntu-latest
     if: |
       github.event_name == 'push' ||
@@ -34,9 +72,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Clean previous distributions
-        run: |
-          rm -rf build dist *.egg-info src/*.egg-info
+      - name: Install packaging tools
+        run: python -m pip install --upgrade pip twine
 
       - name: Verify PyPI token secret
         env:
@@ -54,12 +91,15 @@ jobs:
               ;;
           esac
 
-      - name: Build distributions
+      - name: Download Linux distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: wsba_hockey-linux
+          path: dist
+
+      - name: Check downloaded distributions
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install build twine
-          python -m build
-          twine check dist/*
+          python -m twine check dist/*
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

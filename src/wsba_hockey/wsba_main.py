@@ -1,13 +1,10 @@
 import os
 import random
-import numpy as np
-import pandas as pd
-import matplotlib
+import polars as pl
 import datetime as dt
 import time
 from numbers import Integral
 from typing import Literal, Union
-from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.exceptions import JSONDecodeError
 from wsba_hockey.tools.scraping import (
@@ -24,10 +21,8 @@ from wsba_hockey.tools.agg import (
     calc_indv,
     calc_onice,
     calc_team,
-    concat_col_values,
     extra_calc,
     rank_stats,
-    sum_unique_games,
 )
 from wsba_hockey.tools.plotting import (
     apply_primary_colors,
@@ -36,8 +31,10 @@ from wsba_hockey.tools.plotting import (
     team_primary_color_map,
 )
 from wsba_hockey.tools.xg_model import nhl_apply_xG
-from wsba_hockey.tools.http import POOL_WORKERS, get as http_get, make_pooled_session, pooled_session
+import wsba_hockey.tools.http as http_tools
+from wsba_hockey.tools.http import get as http_get, pooled_session
 from wsba_hockey.tools.globals import (
+    random_game_is_valid,
     BIO_STAT_COL,
     COL_MAP,
     DEFAULT_AGG,
@@ -51,7 +48,6 @@ from wsba_hockey.tools.globals import (
     KNOWN_PROBS,
     NON_TOTALS,
     SCHEDULE_PATH,
-    SHOT_TYPES,
     STANDINGS_COLS,
     STATS_SORT,
     STRENGTHS,
@@ -69,10 +65,11 @@ def nhl_scrape_game(
         remove:list[str] = [], 
         xg:bool = False, 
         sources:bool = False,
-        errors:bool = False
-    ) -> Union[pd.DataFrame, 
-               dict[str, pd.DataFrame],
-               tuple[pd.DataFrame | dict[str, pd.DataFrame], pd.DataFrame]
+        errors:bool = False,
+        session = None
+    ) -> Union[pl.DataFrame, 
+               dict[str, pl.DataFrame],
+               tuple[pl.DataFrame | dict[str, pl.DataFrame], pl.DataFrame]
         ]:
     """
     Given a set of game_ids (NHL API), return complete play-by-play information as requested.
@@ -80,6 +77,8 @@ def nhl_scrape_game(
     Args:
         game_ids (int or List[int] or ['random', int, int, int]):
             List of NHL game IDs to scrape or use ['random', n, start_year, end_year] to fetch n random games.
+        session (requests.Session, optional):
+            HTTP session to reuse for this and other scraping calls. If omitted, the package reuses its default pooled session.
         split_shifts (bool, optional):
             If True, returns a dict with separate 'pbp' and 'shifts' DataFrames. Default is False.
         export_roster (bool, optional):
@@ -92,6 +91,8 @@ def nhl_scrape_game(
             If True, saves raw HTML, JSON, SHIFTS, and single-game full play-by-play to a separate folder in the working directory. Default is False.
         errors (bool, optional):
             If True, includes a list of game IDs that failed to scrape in the return. Default is False.
+        session (requests.Session, optional):
+            HTTP session to reuse for this and other scraping calls. If omitted, the package reuses its default pooled session.
 
     Returns:
         If `split_shifts` is False, returns a single DataFrame of play-by-play data.
@@ -108,6 +109,8 @@ def nhl_scrape_game(
     
     #Wrap game_id in a list if only a single game_id is provided
     game_ids = [game_ids] if type(game_ids) != list else game_ids
+    if session is None:
+        session = pooled_session()
 
     pbps = []
     if game_ids[0] == 'random':
@@ -118,90 +121,91 @@ def nhl_scrape_game(
         end = game_ids[3] if len(game_ids) > 2 else (dt.date.today().year)-1
 
         game_ids = []
-        i = 0
+        seen_ids = set()
         print("Finding valid, random game ids...")
-        while i is not num:
-            print(f"\rGame IDs found in range {start}-{end}: {i}/{num}",end="")
-            rand_year = random.randint(start,end)
-            rand_season_type = random.randint(2,3)
-            rand_game = random.randint(1,1312)
+        while len(game_ids) < num:
+            candidates = []
+            while len(candidates) < max(http_tools.POOL_WORKERS * 2, num - len(game_ids)):
+                rand_year = random.randint(start,end)
+                rand_season_type = random.randint(2,3)
+                rand_game = random.randint(1,1312)
+                rand_id = f'{rand_year}{rand_season_type:02d}{rand_game:04d}'
+                if rand_id not in seen_ids:
+                    seen_ids.add(rand_id)
+                    candidates.append(rand_id)
 
-            #Ensure id validity (and that number of scraped games is equal to specified value)
-            rand_id = f'{rand_year}{rand_season_type:02d}{rand_game:04d}'
-            try: 
-                #If game exists and has at least begun, then scraping can occur.
-                rand_data = http_get(f"https://api-web.nhle.com/v1/gamecenter/{rand_id}/play-by-play").json()
-                if rand_data['gameState'] == 'FUT':
-                    continue
-                else:
-                    i += 1
-                    game_ids.append(rand_id)
-            except: 
-                continue
-        
-        print(f"\rGame IDs found in range {start}-{end}: {i}/{num}")
+            with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
+                futures = {
+                    executor.submit(random_game_is_valid, rand_id, session): rand_id
+                    for rand_id in candidates
+                }
+                for future in as_completed(futures):
+                    if future.result() and len(game_ids) < num:
+                        game_ids.append(futures[future])
+            print(f"\rGame IDs found in range {start}-{end}: {len(game_ids)}/{num}",end="")
+
+        print(f"\rGame IDs found in range {start}-{end}: {len(game_ids)}/{num}")
             
-    #Scrape each game
-    #Track Errors
-    rost_dfs = []
-    error_ids = []
+    # Scrape independent games concurrently.  Results are placed back in
+    # input order so the public output remains deterministic.
+    rost_dfs = [None] * len(game_ids)
+    game_results = [None] * len(game_ids)
+    error_indices = []
     prog = 0
-    for game_id in game_ids:
-        print(f'Scraping data from game {game_id}...',end='')
-        start = time.perf_counter()
 
-        try:
-            #Retrieve data
-            info = get_game_info(game_id)
-            data = combine_data(info, sources)
+    def scrape_one(index, game_id):
+        started = time.perf_counter()
+        info = get_game_info(game_id, session=session)
+        data = combine_data(info, sources, session=session)
+        roster = parse_game_roster(info['rosters'], game_id) if export_roster else None
+        if sources:
+            source_season = info['season']
+            source_game_id = info['game_id']
+            dirs = f"sources/{source_season}/"
+            os.makedirs(dirs, exist_ok=True)
+            data.write_csv(f"{dirs}{source_game_id}.csv")
+        return index, game_id, data, roster, time.perf_counter() - started
 
-            #Export roster if necessary
-            roster = parse_game_roster(info['rosters'], game_id) if export_roster else None
-            rost_dfs.append(roster)
+    game_workers = min(len(game_ids), max(1, http_tools.POOL_WORKERS))
+    with ThreadPoolExecutor(max_workers=game_workers) as executor:
+        futures = {
+            executor.submit(scrape_one, index, game_id): index
+            for index, game_id in enumerate(game_ids)
+        }
+        for future in as_completed(futures):
+            try:
+                index, game_id, data, roster, secs = future.result()
+                game_results[index] = data
+                rost_dfs[index] = roster
+                prog += 1
+                print(
+                    f"Scraping data from game {game_id}... finished in {secs:.2f} seconds. "
+                    f"{prog}/{len(game_ids)} ({(prog / len(game_ids)) * 100:.2f}%)"
+                )
+            except Exception as e:
+                # Games such as all-star and pre-season games can fail here.
+                index = futures[future]
+                game_id = game_ids[index]
+                if game_id in KNOWN_PROBS:
+                    print(f"\nGame {game_id} has a known problem: {KNOWN_PROBS[game_id]}")
+                else:
+                    print(f"\nUnable to scrape game {game_id}.  Exception: {e}")
+                error_indices.append(index)
 
-            #Append data to list
-            pbps.append(data)
-
-            end = time.perf_counter()
-            secs = end - start
-            prog += 1
-            
-            #Export if sources is true
-            if sources:
-                source_season = info['season']
-                source_game_id = info['game_id']
-                dirs = f"sources/{source_season}/"
-
-                if not os.path.exists(dirs):
-                    os.makedirs(dirs)
-
-                data.to_csv(f"{dirs}{source_game_id}.csv",index=False)
-
-            print(f" finished in {secs:.2f} seconds. {prog}/{len(game_ids)} ({(prog/len(game_ids))*100:.2f}%)")
-        except Exception as e:
-            #Games such as the all-star game and pre-season games will incur this error
-            
-            #Other games have known problems
-            if game_id in KNOWN_PROBS.keys():
-                print(f"\nGame {game_id} has a known problem: {KNOWN_PROBS[game_id]}")
-            else:
-                print(f"\nUnable to scrape game {game_id}.  Exception: {e}")
-            
-            #Track error
-            error_ids.append(game_id)
+    pbps.extend(data for data in game_results if data is not None)
+    rost_dfs = [roster for roster in rost_dfs if roster is not None]
+    error_ids = [game_ids[index] for index in sorted(error_indices)]
             
     #Add all pbps together
     if not pbps:
         print("\rNo data returned.")
-        return pd.DataFrame()
-    df = pd.concat(pbps)
-    rosters = pd.concat(rost_dfs) if export_roster else None
+        return pl.DataFrame()
+    df = pl.concat(pbps, how='diagonal_relaxed')
+    rosters = pl.concat(rost_dfs, how='diagonal_relaxed') if export_roster else None
 
     #Add xG if necessary
     if xg:
         df = nhl_apply_xG(df)
-    else:
-        pass
 
     #Print final message
     if error_ids:
@@ -210,15 +214,15 @@ def nhl_scrape_game(
         print('\rScrape of provided games finished.')
 
     #Trim events as necessary and obtain play-by-play df
-    pbp = df.loc[~df['event_type'].isin(remove)]
+    pbp = df.filter(~pl.col('event_type').is_in(remove))
     
     #Split pbp and shift events if necessary
     #Return: complete play-by-play with data removed or split as necessary
     
     if split_shifts:
         pbp_dict = {
-            "pbp": pbp.loc[~pbp['event_type'] != 'change'],
-            "shifts": pbp.loc[df['event_type'] == 'change']
+            "pbp": pbp.filter(pl.col('event_type') != 'change'),
+            "shifts": pbp.filter(pl.col('event_type') == 'change')
         }
 
         if errors:
@@ -238,8 +242,9 @@ def nhl_scrape_game(
 def nhl_scrape_schedule(
         season:int | Literal['now'] = 'now', 
         start:str | None = None, 
-        end:str | None = None
-    ) -> pd.DataFrame:
+        end:str | None = None,
+        session = None
+    ) -> pl.DataFrame:
     """
     Given season and an optional date range, retrieve NHL schedule data.
 
@@ -250,11 +255,16 @@ def nhl_scrape_schedule(
             The date string (MM-DD) to start the schedule scrape at. Default is None
         end (str, optional): 
             The date string (MM-DD) to end the schedule scrape at. Default is None
+        session (requests.Session, optional):
+            HTTP session to reuse for this and other scraping calls. If omitted, the package reuses its default pooled session.
 
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing the schedule data for the specified season and date range.
     """
+
+    if session is None:
+        session = pooled_session()
 
     api = "https://api-web.nhle.com/v1/score/"
     form = '%Y-%m-%d'
@@ -264,7 +274,7 @@ def nhl_scrape_schedule(
         #Set start and end to filler values to ensure only one date is scraped (the phrase 'now' will be appened pre-scrape)
         start = end = dt.datetime.now()
     else:
-        season_data = http_get('https://api.nhle.com/stats/rest/en/season').json()['data']
+        season_data = http_get('https://api.nhle.com/stats/rest/en/season', session=session).json()['data']
         season_data = [s for s in season_data if s['id'] == int(season)][0]
 
         #Select start and end dates for scrape (if none are provided use the official season start and end dates)
@@ -292,32 +302,31 @@ def nhl_scrape_schedule(
         date_context = 'as of' if now else 'on'
         print(f'Scraping games {date_context} {date_string}...')
         
-        get = http_get(f'{api}{date_string}').json()
-        game_week = pd.json_normalize(get['games']).drop(columns=['goals'],errors='ignore')
+        get = http_get(f'{api}{date_string}', session=session).json()
+        game_week = pl.json_normalize(get['games']).drop('goals', strict=False)
         
         #Return nothing if there's nothing
-        if game_week.empty:
-            game.append(game_week)
-        else:
-            game_week['game_date'] = get['currentDate']
-            game_week['game_title'] = game_week['awayTeam.abbrev'] + " @ " + game_week['homeTeam.abbrev'] + " - " + game_week['game_date']
-            game_week['start_time_est'] = pd.to_datetime(game_week['startTimeUTC']).dt.tz_convert('US/Eastern').dt.strftime("%I:%M %p")
+        if not game_week.is_empty():
+            game_week = game_week.with_columns(
+                pl.lit(get['currentDate']).alias('game_date'),
+                (pl.col('awayTeam.abbrev') + " @ " + pl.col('homeTeam.abbrev') + " - " + pl.lit(get['currentDate'])).alias('game_title'),
+                pl.col('startTimeUTC').str.to_datetime(strict=False, time_zone='UTC').dt.convert_time_zone('US/Eastern').dt.strftime("%I:%M %p").alias('start_time_est'),
+            )
 
         game.append(game_week)
         
     #Concatenate all games and standardize column naming
-    df = pd.concat(game).rename(columns=COL_MAP['schedule'],errors='ignore')
-    df = df.loc[:, ~df.columns.duplicated()]
+    df = pl.concat(game, how='diagonal_relaxed').rename(COL_MAP['schedule'], strict=False)
 
     #Set logo links to dark variants (if any data exists)
     try:
         for team in ['away','home']:
-            df[f'{team}_team_logo'] = df[f'{team}_team_logo'].str.replace('light','dark')
+            df = df.with_columns(pl.col(f'{team}_team_logo').str.replace('light','dark').alias(f'{team}_team_logo'))
     except KeyError:
         print('No games found for range of dates provided.')
 
     #Return: specificed schedule data
-    return df[[col for col in COL_MAP['schedule'].values() if col in df.columns]]
+    return df.select([col for col in COL_MAP['schedule'].values() if col in df.columns])
 
 def nhl_scrape_season(
         season:int, 
@@ -330,10 +339,11 @@ def nhl_scrape_season(
         local:bool=False, local_path:str = SCHEDULE_PATH, 
         xg:bool = False, 
         sources:bool = False, 
-        errors:bool = False
-    ) -> Union[pd.DataFrame, 
-               dict[str, pd.DataFrame],
-               tuple[pd.DataFrame | dict[str, pd.DataFrame], pd.DataFrame]
+        errors:bool = False,
+        session = None
+    ) -> Union[pl.DataFrame, 
+               dict[str, pl.DataFrame],
+               tuple[pl.DataFrame | dict[str, pl.DataFrame], pl.DataFrame]
         ]:
     """
     Given season, scrape all play-by-play occuring within the season.
@@ -363,6 +373,8 @@ def nhl_scrape_season(
             If True, saves raw HTML, JSON, SHIFTS, and single-game full play-by-play to a separate folder in the working directory. Default is False.
         errors (bool, optional):
             If True, includes a list of game IDs that failed to scrape in the return. Default is False.
+        session (requests.Session, optional):
+            HTTP session to reuse for schedule and game requests. If omitted, the package reuses its default pooled session.
 
     Returns:
         If `split_shifts` is False, returns a single DataFrame of play-by-play data.
@@ -374,30 +386,28 @@ def nhl_scrape_season(
         - `'errors'` (optional): list of game IDs that failed if `errors=True`
     """
      
+    if session is None:
+        session = pooled_session()
+
     #Determine whether to use schedule data in repository or to scrape
     local_failed = False
 
     if local:
         try:
-            load = pd.read_csv(local_path)
-            load['game_date'] = pd.to_datetime(load['game_date'])
+            load = pl.read_csv(local_path)
+            load = load.with_columns(pl.col('game_date').cast(pl.String).str.to_datetime(strict=False).alias('game_date'))
             
-            season_data = http_get('https://api.nhle.com/stats/rest/en/season').json()['data']
+            season_data = http_get('https://api.nhle.com/stats/rest/en/season', session=session).json()['data']
             season_data = [s for s in season_data if s['id'] == season][0]
 
             season_start = f'{(str(season)[0:4] if int(start[0:2])>=9 else str(season)[4:8])}-{start[0:2]}-{start[3:5]}' if start else season_data['startDate'][0:10]
             season_end = f'{(str(season)[0:4] if int(end[0:2])>=9 else str(season)[4:8])}-{end[0:2]}-{end[3:5]}' if end else season_data['endDate'][0:10]
 
             #Create datetime values from dates
-            start_date = pd.to_datetime(season_start)
-            end_date = pd.to_datetime(season_end)
+            start_date = dt.datetime.strptime(season_start, '%Y-%m-%d')
+            end_date = dt.datetime.strptime(season_end, '%Y-%m-%d')
 
-            load = load.loc[(load['season']==season)&
-                            (load['season_type'].isin(season_types))&
-                            (load['game_date']>=start_date)&(load['game_date']<=end_date)&
-                            (load['game_schedule_state']=='OK')&
-                            (load['game_state']!='FUT')
-                            ]
+            load = load.filter((pl.col('season') == season) & pl.col('season_type').is_in(season_types) & (pl.col('game_date') >= start_date) & (pl.col('game_date') <= end_date) & (pl.col('game_schedule_state') == 'OK') & (pl.col('game_state') != 'FUT'))
             
             game_ids = load['game_id'].to_list()
         except KeyError:
@@ -408,12 +418,8 @@ def nhl_scrape_season(
         local_failed = True
 
     if local_failed:
-        load = nhl_scrape_schedule(season,start,end)
-        load = load.loc[(load['season']==season)&
-                        (load['season_type'].isin(season_types))&
-                        (load['game_schedule_state']=='OK')&
-                        (load['game_state']!='FUT')
-                        ]
+        load = nhl_scrape_schedule(season,start,end,session=session)
+        load = load.filter((pl.col('season') == season) & pl.col('season_type').is_in(season_types) & (pl.col('game_schedule_state') == 'OK') & (pl.col('game_state') != 'FUT'))
         
         game_ids = load['game_id'].to_list()
 
@@ -426,7 +432,7 @@ def nhl_scrape_season(
     start = time.perf_counter()
 
     #Perform scrape
-    data = nhl_scrape_game(game_ids,split_shifts,export_roster,remove=remove,xg=xg,sources=sources,errors=errors)
+    data = nhl_scrape_game(game_ids,split_shifts,export_roster,remove=remove,xg=xg,sources=sources,errors=errors,session=session)
     
     end = time.perf_counter()
     secs = end - start
@@ -435,7 +441,7 @@ def nhl_scrape_season(
     #Return: Complete pbp and shifts data for specified season as well as dataframe of game_ids which failed to return data
     return data
 
-def nhl_scrape_seasons_info(seasons:list[int] = []) -> pd.DataFrame:
+def nhl_scrape_seasons_info(seasons:list[int] = [], session=None) -> pl.DataFrame:
     """
     Returns info related to NHL seasons (by default, all seasons are included)
     Args:
@@ -443,34 +449,37 @@ def nhl_scrape_seasons_info(seasons:list[int] = []) -> pd.DataFrame:
             The NHL season formatted such as "20242025".
 
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing the information for requested seasons.
     """
+
+    if session is None:
+        session = pooled_session()
 
     print(f'Scraping info for seasons: {seasons}')
     
     #Load two different data sources: general season info and standings data related to season
     api = "https://api.nhle.com/stats/rest/en/season"
     info = "https://api-web.nhle.com/v1/standings-season"
-    data = http_get(api).json()['data']
-    data_2 = http_get(info).json()['seasons']
+    data = http_get(api, session=session).json()['data']
+    data_2 = http_get(info, session=session).json()['seasons']
 
-    df = pd.json_normalize(data)
-    df_2 = pd.json_normalize(data_2)
+    df = pl.json_normalize(data)
+    df_2 = pl.json_normalize(data_2)
 
     #Remove common columns
-    df_2 = df_2.drop(columns=['conferencesInUse', 'divisionsInUse', 'pointForOTlossInUse','rowInUse','tiesInUse','wildcardInUse'])
+    df_2 = df_2.drop(['conferencesInUse', 'divisionsInUse', 'pointForOTlossInUse','rowInUse','tiesInUse','wildcardInUse'], strict=False)
     
-    df = pd.merge(df,df_2,how='outer',on=['id']).rename(columns=COL_MAP['season_info'])
+    df = df.join(df_2, how='full', on='id', coalesce=True).rename(COL_MAP['season_info'], strict=False)
     
-    df = df[[col for col in COL_MAP['season_info'].values() if col in df.columns]]
+    df = df.select([col for col in COL_MAP['season_info'].values() if col in df.columns])
 
     if len(seasons) > 0:
-        return df.loc[df['season'].isin(seasons)].sort_values(by=['season'])
+        return df.filter(pl.col('season').is_in(seasons)).sort('season')
     else:
-        return df.sort_values(by=['season'])
+        return df.sort('season')
 
-def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_type:int = 2) -> pd.DataFrame:
+def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_type:int = 2, session=None) -> pl.DataFrame:
     """
     Returns standings or playoff bracket
     Args:
@@ -480,9 +489,12 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
             Part of season to scrape.  If 3 (playoffs) then scrape the playoff bracket for the season implied by arg. When arg = 'now' this is defaulted to the most recent playoff year.  Any dates passed through are parsed as seasons. Default is 2.
 
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing the standings information (or playoff bracket).
     """
+
+    if session is None:
+        session = pooled_session()
 
     current_year = dt.datetime.now().year
 
@@ -506,23 +518,23 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
             api = f"https://api-web.nhle.com/v1/playoff-bracket/{season}"
 
             try:
-                data = http_get(api).json()['series']
-                dfs.append(pd.json_normalize(data))
+                data = http_get(api, session=session).json()['series']
+                dfs.append(pl.json_normalize(data))
             except Exception as e:
                 print(f"Error scraping playoff bracket for season {season}: {e}")
-                dfs.append(pd.DataFrame())
+                dfs.append(pl.DataFrame())
 
         #Combine and standardize columns
-        df = pd.concat(dfs).rename(columns=COL_MAP['standings'])
+        df = pl.concat(dfs, how='diagonal_relaxed').rename(COL_MAP['standings'], strict=False)
 
         #Return: playoff bracket
-        return df[[col for col in COL_MAP['standings'].values() if col in df.columns]]
+        return df.select([col for col in COL_MAP['standings'].values() if col in df.columns])
 
     else:
         if arg == "now":
             print("Scraping standings as of now...")
             arg = [arg]
-        elif arg in nhl_scrape_seasons():
+        elif arg in nhl_scrape_seasons(session=session):
             print(f'Scraping standings for season: {arg}')
             arg = [arg]
         elif type(arg) == list:
@@ -536,7 +548,7 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
             #If the end is an int then its a season otherwise it is either 'now' or a date as a string
             if type(search) == int:
                 #Check if the season date is during the requested season - if so then use this date to find the current standings for the requested season
-                season_data = http_get('https://api.nhle.com/stats/rest/en/season').json()['data']
+                season_data = http_get('https://api.nhle.com/stats/rest/en/season', session=session).json()['data']
                 season_data = [s for s in season_data if s['id'] == search][0]
                 
                 season_start = season_data['startDate']
@@ -554,57 +566,54 @@ def nhl_scrape_standings(arg:int | list[int] | Literal['now'] = 'now', season_ty
             api = f"https://api-web.nhle.com/v1/standings/{end}"
 
             try:
-                data = http_get(api).json()['standings']
-                dfs.append(pd.json_normalize(data))
+                data = http_get(api, session=session).json()['standings']
+                dfs.append(pl.json_normalize(data))
             except Exception as e:
                 print(f"Error scraping standings for date {end}: {e}")
-                dfs.append(pd.DataFrame())
+                dfs.append(pl.DataFrame())
 
         #Standardize columns
-        df = pd.concat(dfs).rename(columns=COL_MAP['standings'])
-        
-        df['wsba_id'] = df['team_abbr'].astype(str) + df['season'].astype(str)
+        df = pl.concat(dfs, how='diagonal_relaxed').rename(COL_MAP['standings'], strict=False).with_columns((pl.col('team_abbr').cast(pl.String) + pl.col('season').cast(pl.String)).alias('wsba_id'))
         
         #Return: standings data
-        return df[[col for col in COL_MAP['standings'].values() if col in df.columns]]
+        return df.select([col for col in COL_MAP['standings'].values() if col in df.columns])
 
-def nhl_scrape_game_roster(game_ids: int | list[int]) -> pd.DataFrame:
+def nhl_scrape_game_roster(game_ids: int | list[int], session=None) -> pl.DataFrame:
     """
     Returns rosters for a list of individual games
 
     Args:
         game_ids (int or List[int] or ['random', int, int, int]):
             List of NHL game IDs to scrape or use ['random', n, start_year, end_year] to fetch n random games.
+        session (requests.Session, optional):
+            HTTP session to reuse for all roster requests and other scraping calls. If omitted, the package reuses its default pooled session.
 
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing the rosters for all games in the specified list.
     """
     #Wrap game_id in a list if only a single game_id is provided
     game_ids = [game_ids] if type(game_ids) != list else game_ids
 
-    #Prepare session to speed up requests
-    global session
-    session = make_pooled_session()
+    #Reuse a caller-owned session when supplied; otherwise use the package default.
+    if session is None:
+        session = pooled_session()
 
     #Helper function to quickly retrieve roster
-    def fetch_roster(game, rest):
+    def fetch_roster(game):
         print(f'Scraping rosters for game {game}...')
 
         r = session.get(f'https://api-web.nhle.com/v1/gamecenter/{game}/play-by-play', timeout=10)
         data = r.json()
-        roster = parse_game_roster(pd.json_normalize(data['rosterSpots']), game)
+        roster = parse_game_roster(pl.json_normalize(data['rosterSpots']), game)
 
-        time.sleep(rest)
         return roster
 
     #Re-use the game info for pbp to just get the roster
     dfs = []
     errors = []
-
-    dfs = []
-    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as ex:
-        futures = {ex.submit(fetch_roster, g, 2): g for g in game_ids}
+    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as ex:
+        futures = {ex.submit(fetch_roster, g): g for g in game_ids}
         for f in as_completed(futures):
             g = futures[f]
             try:
@@ -616,13 +625,15 @@ def nhl_scrape_game_roster(game_ids: int | list[int]) -> pd.DataFrame:
                 errors.append(g)
 
     if dfs:
-        rosters = pd.concat(dfs, ignore_index=True)
+        rosters = pl.concat(dfs, how='diagonal_relaxed')
     else:
         print("\rNo data returned.")
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     #Add team abbreviations
-    rosters['team_abbr'] = rosters['team_id'].replace(TEAMS)
+    rosters = rosters.with_columns(
+        pl.col('team_id').replace(TEAMS, default=None).alias('team_abbr')
+    )
 
     #Print final message
     if errors:
@@ -633,7 +644,7 @@ def nhl_scrape_game_roster(game_ids: int | list[int]) -> pd.DataFrame:
     #Return: roster data for provided games
     return rosters
 
-def nhl_scrape_roster(season: int, teams: str | list[str] | None = None) -> pd.DataFrame:
+def nhl_scrape_roster(season: int, teams: str | list[str] | None = None, session=None) -> pl.DataFrame:
     """
     Returns rosters for a selection teams in a given season.
 
@@ -645,17 +656,20 @@ def nhl_scrape_roster(season: int, teams: str | list[str] | None = None) -> pd.D
             List of teams(three letter abbreviation) to scrape.
 
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing the rosters for all teams in the specified season.
     """
 
+    if session is None:
+        session = pooled_session()
+
     print(f'Scrpaing rosters for the {season} season...')
-    teaminfo = pd.read_csv(INFO_PATH)
+    teaminfo = pl.read_csv(INFO_PATH)
 
     if isinstance(teams, str):
         teams = [teams]
     elif not teams:
-        teams = teaminfo['team_abbr'].drop_duplicates()
+        teams = teaminfo['team_abbr'].unique().to_list()
 
     rosts = []
     for team in teams:
@@ -663,34 +677,31 @@ def nhl_scrape_roster(season: int, teams: str | list[str] | None = None) -> pd.D
             print(f'Scraping {team} roster...')
             api = f'https://api-web.nhle.com/v1/roster/{team}/{season}'
             
-            data = http_get(api).json()
-            forwards = pd.json_normalize(data['forwards'])
-            forwards['heading_position'] = "F"
-            dmen = pd.json_normalize(data['defensemen'])
-            dmen['heading_position'] = "D"
-            goalies = pd.json_normalize(data['goalies'])
-            goalies['heading_position'] = "G"
+            data = http_get(api, session=session).json()
+            forwards = pl.json_normalize(data['forwards'])
+            forwards = forwards.with_columns(pl.lit('F').alias('heading_position'))
+            dmen = pl.json_normalize(data['defensemen'])
+            dmen = dmen.with_columns(pl.lit('D').alias('heading_position'))
+            goalies = pl.json_normalize(data['goalies'])
+            goalies = goalies.with_columns(pl.lit('G').alias('heading_position'))
 
-            roster = pd.concat([forwards,dmen,goalies]).reset_index(drop=True)
-            roster['player_name'] = (roster['firstName.default']+" "+roster['lastName.default']).str.upper()
-            roster['season'] = season
-            roster['team_abbr'] = team
+            roster = pl.concat([forwards,dmen,goalies], how='diagonal_relaxed').with_columns([(pl.col('firstName.default')+" "+pl.col('lastName.default')).str.to_uppercase().alias('player_name'), pl.lit(season).alias('season'), pl.lit(team).alias('team_abbr')])
 
             rosts.append(roster)
         except:
             print(f'No roster found for {team}...')
-            rosts.append(pd.DataFrame())
+            rosts.append(pl.DataFrame())
 
     #Combine rosters
-    df = pd.concat(rosts)
+    df = pl.concat(rosts)
 
     #Standardize columns
-    df = df.rename(columns=COL_MAP['roster'])
+    df = df.rename(COL_MAP['roster'], strict=False)
 
     #Return: roster data for provided season
-    return df[[col for col in COL_MAP['roster'].values() if col in df.columns]]
+    return df.select([col for col in COL_MAP['roster'].values() if col in df.columns])
 
-def nhl_scrape_prospects(team:str) -> pd.DataFrame:
+def nhl_scrape_prospects(team:str, session=None) -> pl.DataFrame:
     """
     Returns prospects for specified team
 
@@ -699,30 +710,33 @@ def nhl_scrape_prospects(team:str) -> pd.DataFrame:
             Three character team abbreviation such as 'BOS'
 
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing the prospect data for the specified team.
     """
 
+    if session is None:
+        session = pooled_session()
+
     api = f'https://api-web.nhle.com/v1/prospects/{team}'
 
-    data = http_get(api).json()
+    data = http_get(api, session=session).json()
 
     print(f'Scraping {team} prospects...')
 
     #Iterate through positions
-    players = [pd.json_normalize(data[pos]) for pos in ['forwards','defensemen','goalies']]
+    players = [pl.json_normalize(data[pos]) for pos in ['forwards','defensemen','goalies']]
 
-    prospects = pd.concat(players)
+    prospects = pl.concat(players, how='diagonal_relaxed')
     #Add name columns
-    prospects['player_name'] = (prospects['firstName.default']+" "+prospects['lastName.default']).str.upper()
+    prospects = prospects.with_columns((pl.col('firstName.default') + " " + pl.col('lastName.default')).str.to_uppercase().alias('player_name'))
 
     #Standardize columns
-    prospects = prospects.rename(columns=COL_MAP['prospects'])
+    prospects = prospects.rename(COL_MAP['prospects'], strict=False)
     
     #Return: team prospects
-    return prospects[[col for col in COL_MAP['prospects'].values() if col in prospects.columns]]
+    return prospects.select([col for col in COL_MAP['prospects'].values() if col in prospects.columns])
 
-def nhl_scrape_team_info(country:bool = False) -> pd.DataFrame:
+def nhl_scrape_team_info(country:bool = False, session=None) -> pl.DataFrame:
     """
     Returns team or country information from the NHL API.
 
@@ -731,28 +745,30 @@ def nhl_scrape_team_info(country:bool = False) -> pd.DataFrame:
             If True, returns country information instead of NHL team information.
 
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing team or country information from the NHL API.
     """
+
+    if session is None:
+        session = pooled_session()
 
     info_type = 'country' if country else 'team'
     print(f'Scraping {info_type} information...')
     api = f'https://api.nhle.com/stats/rest/en/{info_type}'
     
-    data =  pd.json_normalize(http_get(api).json()['data'])
+    data = pl.json_normalize(http_get(api, session=session).json()['data'])
 
     #Add logos if necessary
     if not country:
-        data['logo_light'] = 'https://assets.nhle.com/logos/nhl/svg/'+data['triCode']+'_light.svg'
-        data['logo_dark'] = 'https://assets.nhle.com/logos/nhl/svg/'+data['triCode']+'_dark.svg'
+        data = data.with_columns([('https://assets.nhle.com/logos/nhl/svg/' + pl.col('triCode') + '_light.svg').alias('logo_light'), ('https://assets.nhle.com/logos/nhl/svg/' + pl.col('triCode') + '_dark.svg').alias('logo_dark')])
 
     #Standardize columns
-    data = data.rename(columns=COL_MAP['team_info'])
+    data = data.rename(COL_MAP['team_info'], strict=False)
 
     #Return: team or country info 
-    return data[[col for col in COL_MAP['team_info'].values() if col in data.columns]].sort_values(by=(['country_abbr','country_name'] if country else ['team_abbr','team_name']))
+    return data.select([col for col in COL_MAP['team_info'].values() if col in data.columns]).sort(['country_abbr','country_name'] if country else ['team_abbr','team_name'])
 
-def nhl_scrape_player_info(player_ids: list[int]) -> pd.DataFrame:
+def nhl_scrape_player_info(player_ids: list[int], session=None) -> pl.DataFrame:
     """
     Returns player data for specified players.
 
@@ -761,7 +777,7 @@ def nhl_scrape_player_info(player_ids: list[int]) -> pd.DataFrame:
             List of NHL API player IDs to retrieve information for.
 
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing player data for specified players.
     """
 
@@ -770,40 +786,38 @@ def nhl_scrape_player_info(player_ids: list[int]) -> pd.DataFrame:
     #Wrap game_id in a list if only a single game_id is provided
     player_ids = [player_ids] if type(player_ids) != list else player_ids
 
-    session = make_pooled_session()
+    if session is None:
+        session = pooled_session()
 
-    def fetch_player(player_id, rest):
+    def fetch_player(player_id):
         player_id = int(player_id)
         api = f'https://api-web.nhle.com/v1/player/{player_id}/landing'
 
         try:
-            data = pd.json_normalize(session.get(api, timeout=10).json())
+            data = pl.json_normalize(session.get(api, timeout=10).json())
             #Add name column
-            data['player_name'] = (data['firstName.default'] + " " + data['lastName.default']).str.upper()
-            time.sleep(rest)
+            data = data.with_columns((pl.col('firstName.default') + " " + pl.col('lastName.default')).str.to_uppercase().alias('player_name'))
             return data
         except JSONDecodeError:
             return None
 
     infos = []
-    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as executor:
-        infos = list(executor.map(lambda pid: fetch_player(pid, 1), player_ids))
+    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
+        infos = list(executor.map(fetch_player, player_ids))
 
-    session.close()
-
-    infos = [df for df in infos if df is not None and not df.empty]
+    infos = [df for df in infos if df is not None and not df.is_empty()]
     if infos:
-        df = pd.concat(infos)
+        df = pl.concat(infos)
         
         #Standardize columns
-        df = df.rename(columns=COL_MAP['player_info'])
+        df = df.rename(COL_MAP['player_info'], strict=False)
 
         #Return: player data
-        return df[[col for col in COL_MAP['player_info'].values() if col in df.columns]]
+        return df.select(list(dict.fromkeys(col for col in COL_MAP['player_info'].values() if col in df.columns)))
     else:
-        return pd.DataFrame()
+        return pl.DataFrame()
 
-def nhl_scrape_draft_rankings(arg:str | Literal['now'] = 'now', category:int = 0) -> pd.DataFrame:
+def nhl_scrape_draft_rankings(arg:str | Literal['now'] = 'now', category:int = 0, session=None) -> pl.DataFrame:
     """
     Returns draft rankings
     Args:
@@ -813,32 +827,35 @@ def nhl_scrape_draft_rankings(arg:str | Literal['now'] = 'now', category:int = 0
             Category number for prospects. When ``arg='now'`` this does not apply. Categories: 1=North American Skaters, 2=International Skaters, 3=North American Goalies, 4=International Goalies. Default is 0 (all prospects).
             
     Returns:
-        pd.DataFrame: 
+        pl.DataFrame: 
             A DataFrame containing draft rankings.
     """
+
+    if session is None:
+        session = pooled_session()
 
     print(f'Scraping draft rankings for {arg}...\nCategory: {DRAFT_CAT[category]}...')
 
     #Player category only applies when requesting a specific season
     api = f"https://api-web.nhle.com/v1/draft/rankings/{arg}/{category}" if category > 0 else f"https://api-web.nhle.com/v1/draft/rankings/{arg}"
-    data = pd.json_normalize(http_get(api).json()['rankings'])
+    data = pl.json_normalize(http_get(api, session=session).json()['rankings'])
 
     #Add player name columns
-    data['player_name'] = (data['firstName']+" "+data['lastName']).str.upper()
+    data = data.with_columns((pl.col('firstName')+" "+pl.col('lastName')).str.to_uppercase().alias('player_name'))
 
     #Fix positions
-    data['positionCode'] = data['positionCode'].replace({
+    data = data.with_columns(pl.col('positionCode').replace({
         'LW':'L',
         'RW':'R'
-    })
+    }).alias('positionCode'))
 
     #Standardize columns
-    data = data.rename(columns=COL_MAP['draft_rankings'])
+    data = data.rename(COL_MAP['draft_rankings'], strict=False)
 
     #Return: prospect rankings
-    return data[[col for col in COL_MAP['draft_rankings'].values() if col in data.columns]]
+    return data.select([col for col in COL_MAP['draft_rankings'].values() if col in data.columns])
 
-def nhl_scrape_game_info(game_ids:list[int]) -> pd.DataFrame:
+def nhl_scrape_game_info(game_ids:list[int], session=None) -> pl.DataFrame:
     """
     Given a set of game_ids (NHL API), return information for each game.
 
@@ -847,9 +864,12 @@ def nhl_scrape_game_info(game_ids:list[int]) -> pd.DataFrame:
             List of NHL game IDs to scrape or use ['random', n, start_year, end_year] to fetch n random games.
     
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             An DataFrame containing information for each game.    
     """
+
+    if session is None:
+        session = pooled_session()
 
     #Wrap game_id in a list if only a single game_id is provided
     game_ids = [game_ids] if type(game_ids) != list else game_ids
@@ -859,20 +879,18 @@ def nhl_scrape_game_info(game_ids:list[int]) -> pd.DataFrame:
     link = 'https://api-web.nhle.com/v1/gamecenter'
 
     #Scrape information
-    df = pd.concat([pd.json_normalize(http_get(f'{link}/{game_id}/landing').json()) for game_id in game_ids])
+    df = pl.concat([pl.json_normalize(http_get(f'{link}/{game_id}/landing', session=session).json()) for game_id in game_ids], how='diagonal_relaxed')
 
     #Add extra info
-    df['game_date'] = df['gameDate']
-    df['game_title'] = df['awayTeam.abbrev'] + " @ " + df['homeTeam.abbrev'] + " - " + df['game_date']
-    df['start_time_est'] = pd.to_datetime(df['startTimeUTC']).dt.tz_convert('US/Eastern').dt.strftime("%I:%M %p")
+    df = df.with_columns([(pl.col('gameDate')).alias('game_date'), (pl.col('awayTeam.abbrev') + " @ " + pl.col('homeTeam.abbrev') + " - " + pl.col('gameDate')).alias('game_title'), pl.col('startTimeUTC').str.to_datetime(strict=False, time_zone='UTC').dt.convert_time_zone('US/Eastern').dt.strftime("%I:%M %p").alias('start_time_est')])
 
     #Standardize columns
-    df = df.rename(columns=COL_MAP['schedule'])
+    df = df.rename(COL_MAP['schedule'], strict=False)
 
     #Return: game information
-    return df[[col for col in COL_MAP['schedule'].values() if col in df.columns]]
+    return df.select([col for col in COL_MAP['schedule'].values() if col in df.columns])
 
-def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrape: list[int | str], season_type:int = 2) -> pd.DataFrame:
+def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrape: list[int | str], season_type:int = 2, session=None) -> pl.DataFrame:
     """
     Returns NHL Edge stats and data for a selection of skaters, goalies, or teams in a given season.
 
@@ -887,18 +905,21 @@ def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrap
             Season type to include in scraping process.  Default is all regular season games which is the int '2'.
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing NHL EDGE metrics for the requested
             skaters, goalies, and/or teams for the specified season.
     """
     
+    if session is None:
+        session = pooled_session()
+
     print(f'Scraping {group} edge data for the {season} season...')
     start = time.perf_counter()
 
     #NHL edge endpoint for teams uses their team ID rather than their three-letter abbreviation
     if group == 'team':
-        data = nhl_scrape_team_info()
-        teams = data.set_index('team_abbr')['team_id'].to_dict()
+        data = nhl_scrape_team_info(session=session)
+        teams = dict(zip(data['team_abbr'].to_list(), data['team_id'].to_list()))
 
         print(teams)
 
@@ -915,23 +936,23 @@ def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrap
 
     #Iterate through each category and merge the total df to create a full EDGE stats df
     dfs = []
-    with ThreadPoolExecutor(max_workers=POOL_WORKERS) as executor:
-        futures = {executor.submit(edge_stat_entry, entry, season, season_type, group): entry for entry in entries}
+    with ThreadPoolExecutor(max_workers=http_tools.POOL_WORKERS) as executor:
+        futures = {executor.submit(edge_stat_entry, entry, season, season_type, group, session): entry for entry in entries}
         for future in as_completed(futures):
             try:
                 df_entry = future.result()
             except Exception as e:
                 print(f'Error fetching {futures[future]}: {e}')
-                df_entry = pd.DataFrame()
+                df_entry = pl.DataFrame()
 
-            if not df_entry.empty:
+            if not df_entry.is_empty():
                 dfs.append(df_entry)
 
     if not dfs:
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     #Combine edge data
-    df = pd.concat(dfs, ignore_index=True)
+    df = pl.concat(dfs, how='diagonal_relaxed')
 
     end = time.perf_counter()
     length = end-start
@@ -939,20 +960,25 @@ def nhl_scrape_edge(season: int, group: Literal['skater','goalie','team'], scrap
     elapsed_unit = 'seconds' if length < 60 else 'minutes'
     print(f'...finished in {elapsed:.2f} {elapsed_unit}.')
 
-    if df.empty:
+    if df.is_empty():
         return df
     else:
         #Standardize columns
-        df = df.rename(columns=COL_MAP['edge'])
+        edge_mapping = {}
+        used_edge_names = set()
+        for source, target in COL_MAP['edge'].items():
+            if source in df.columns and target not in used_edge_names:
+                edge_mapping[source] = target
+                used_edge_names.add(target)
+        df = df.rename(edge_mapping, strict=False)
 
         #Add additional columns
-        df['season_type'] = season_type
-        df['wsba_id'] = df['team_abbr']+df['season'].astype(str) if group == 'team' else df['player_id'].astype(str)+df['season'].astype(str)+df['team_abbr']
+        df = df.with_columns([pl.lit(season_type).alias('season_type'), (pl.col('team_abbr')+pl.col('season').cast(pl.String) if group == 'team' else pl.col('player_id').cast(pl.String)+pl.col('season').cast(pl.String)+pl.col('team_abbr')).alias('wsba_id')])
 
         #Return: dataframe including NHL Edge data for the specified group and the entries included
-        return df[[col for col in COL_MAP['edge'].values() if col in df.columns]]
+        return df.select(list(dict.fromkeys(col for col in COL_MAP['edge'].values() if col in df.columns)))
 
-def nhl_scrape_event_data(game_info: dict[int, dict]) -> pd.DataFrame:
+def nhl_scrape_event_data(game_info: dict[int, dict], session=None) -> pl.DataFrame:
     """
     Given NHL game IDs and event IDs, return event sprite tracking data.
 
@@ -961,11 +987,12 @@ def nhl_scrape_event_data(game_info: dict[int, dict]) -> pd.DataFrame:
             Dictionary mapping NHL game IDs to event IDs to scrape.
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing event sprite tracking data.
     """
 
-    session = pooled_session()
+    if session is None:
+        session = pooled_session()
     session.headers.update({"Referer": "https://www.nhl.com/", "User-Agent": "Mozilla/5.0"})
     
     dfs = []
@@ -979,15 +1006,12 @@ def nhl_scrape_event_data(game_info: dict[int, dict]) -> pd.DataFrame:
             response = session.get(f"https://wsr.nhle.com/sprites/{season}/{game_id}/ev{event_id}.json", timeout=10)
             if response.status_code == 200:
                 df = parse_event_sprite(response.json(), landing["homeTeam"]["id"], landing["awayTeam"]["id"])
-                df["game_id"] = int(game_id)
-                df["season"] = season
-                df["season_type"] = int(str(game_id)[4:6])
-                df["ev_id"] = event_id
+                df = df.with_columns([pl.lit(int(game_id)).alias('game_id'), pl.lit(season).alias('season'), pl.lit(int(str(game_id)[4:6])).alias('season_type'), pl.lit(event_id).alias('ev_id')])
                 dfs.append(df)
 
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+    return pl.concat(dfs, how='diagonal_relaxed') if dfs else pl.DataFrame()
 
-def nhl_scrape_seasons(analytic: bool = False) -> pd.DataFrame:
+def nhl_scrape_seasons(analytic: bool = False, session=None) -> pl.DataFrame:
     """
     Returns list of NHL seasons
 
@@ -996,11 +1020,14 @@ def nhl_scrape_seasons(analytic: bool = False) -> pd.DataFrame:
             Filters list of seasons to those only included in the WSBA Hockey package (2007-2008 and beyond) if True.  Default is False.
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing a list of all NHL seasons.
     """
 
-    data = http_get('https://api-web.nhle.com/v1/season').json()
+    if session is None:
+        session = pooled_session()
+
+    data = http_get('https://api-web.nhle.com/v1/season', session=session).json()
 
     if analytic:
         data = [season for season in data if season > 20062007]
@@ -1009,19 +1036,19 @@ def nhl_scrape_seasons(analytic: bool = False) -> pd.DataFrame:
 
 
 def nhl_calculate_stats(
-        pbp:pd.DataFrame, 
+        pbp:pl.DataFrame, 
         group:Literal['skater','goalie','team','game_score'], 
         game_strength:Union[Literal['all'], str, list[str]] = 'all', 
         season_types:int | list[int] = [2,3],
         schedule_path:str = SCHEDULE_PATH,
         roster_path:str = DEFAULT_ROSTER
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
     """
     Given play-by-play data, seasonal information, game strength, rosters, and an xG model,
     return raw-total statistics at the game level for skaters, goalies, or teams.
 
     Args:
-        pbp (pd.DataFrame):
+        pbp (pl.DataFrame):
             A DataFrame containing play-by-play event data.
         group (Literal['skater', 'goalie', 'team', 'game_score']):
             Type of statistics to calculate. Must be one of 'skater', 'goalie', 'team', or 'game_score' (specific combination of skaters and goaltenders by game).
@@ -1037,11 +1064,11 @@ def nhl_calculate_stats(
             File path to the roster data used for mapping players and teams.
             
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing the aggregated statistics according to the selected parameters.
     """
 
-    seasons = pbp['season'].drop_duplicates().dropna().astype(int)
+    seasons = pbp['season'].drop_nulls().unique().cast(pl.Int64)
    
     season_type_label = (
         'regular season' if season_types == 2 else
@@ -1065,13 +1092,28 @@ def nhl_calculate_stats(
         game_strength = [game_strength]
 
     #Apply season_type filter, remove shootouts, and remove invalid strengths
-    pbp = pbp.loc[(pbp['season_type'].isin(season_types))&(pbp['period_type']!='SO')&(pbp['strength_state'].isin(STRENGTHS))]
+    pbp = pbp.filter(pl.col('season_type').is_in(season_types) & (pl.col('period_type') != 'SO') & pl.col('strength_state').is_in(STRENGTHS))
 
     #Convert all columns with player ids to float in order to avoid merging errors
     id_cols = [col for col in pbp.columns if '_id' in col]
-    for col in id_cols:
-        if not pd.api.types.is_numeric_dtype(pbp[col]):
-            pbp[col] = pd.to_numeric(pbp[col], errors='coerce')
+    cast_ids = [
+        pl.col(col).cast(pl.Float64, strict=False).alias(col)
+        for col in id_cols
+        if not pbp[col].dtype.is_numeric()
+    ]
+    if cast_ids:
+        pbp = pbp.with_columns(cast_ids)
+
+    # Keep input schema inference permissive and coerce only
+    # fields whose calculations require numeric comparisons/arithmetic.
+    numeric_columns = ['season_type', 'short', 'penalty_duration', 'event_length', 'xG']
+    cast_numeric = [
+        pl.col(col).cast(pl.Float64, strict=False).alias(col)
+        for col in numeric_columns
+        if col in pbp.columns and not pbp[col].dtype.is_numeric()
+    ]
+    if cast_numeric:
+        pbp = pbp.with_columns(cast_numeric)
 
     second_group = ['season', 'game_id']
 
@@ -1087,33 +1129,32 @@ def nhl_calculate_stats(
         onice_stats = calc_onice(pbp,game_strength,second_group)
 
         #IDs sometimes set as objects
-        indv_stats['player_id'] = indv_stats['player_id'].astype(float)
-        onice_stats['player_id'] = onice_stats['player_id'].astype(float)
+        indv_stats = indv_stats.with_columns(pl.col('player_id').cast(pl.Float64, strict=False))
+        onice_stats = onice_stats.with_columns(pl.col('player_id').cast(pl.Float64, strict=False))
 
         merge_cols = ['player_id','team_abbr'] + second_group
-        complete = pd.merge(indv_stats, onice_stats, how='outer', on=merge_cols)
+        complete = indv_stats.join(onice_stats, how='full', on=merge_cols, coalesce=True, suffix='_onice')
     
     #Remove entries with no ID listed
     if 'player_id' in complete.columns:
-        complete = complete.loc[complete['player_id'].notna()]
+        complete = complete.filter(pl.col('player_id').is_not_null())
 
     #Remove entries with no time on ice
-    complete = complete.loc[complete['time_on_ice'].notna()]
+    complete = complete.filter(pl.col('time_on_ice').is_not_null())
 
     #Set TOI to minutes
-    complete['time_on_ice'] = complete['time_on_ice'] / 60
+    complete = complete.with_columns((pl.col('time_on_ice') / 60).alias('time_on_ice'))
 
     if group != 'game_score':
-        complete['time_on_ice_per_games_played'] = complete['time_on_ice']/complete['games_played'] 
+        complete = complete.with_columns((pl.col('time_on_ice') / pl.col('games_played')).alias('time_on_ice_per_games_played'))
 
     #Apply roster information to stats
     sort_info = STATS_SORT[group]
     
-    complete = apply_rosters(complete, group, schedule_path, roster_path).fillna(0).sort_values(by=sort_info['by'], ascending=sort_info['ascending'])
+    complete = apply_rosters(complete, group, schedule_path, roster_path).fill_null(0).sort(sort_info['by'], descending=not sort_info['ascending'])
 
     #Add strength and season type columns to the end of the df
-    complete['strength_state'] = game_strength if isinstance(game_strength, str) else ', '.join(game_strength)
-    complete['season_type'] = 'all' if season_types == [2,3] else season_types if isinstance(season_types, int) else ', '.join([str(s) for s in season_types])
+    complete = complete.with_columns([pl.lit(game_strength if isinstance(game_strength, str) else ', '.join(game_strength)).alias('strength_state'), pl.lit('all' if season_types == [2,3] else season_types if isinstance(season_types, int) else ', '.join([str(s) for s in season_types])).alias('season_type')])
     
     end = time.perf_counter()
     length = end-start
@@ -1124,7 +1165,7 @@ def nhl_calculate_stats(
     return complete
 
 def nhl_agg_stats(
-        games_df:pd.DataFrame, 
+        games_df:pl.DataFrame, 
         group_by:list[Literal['player_id','season','team_abbr','position','season_type','strength_state']] = DEFAULT_AGG, 
         params:dict | None = None, 
         sort:dict = {}, 
@@ -1135,13 +1176,13 @@ def nhl_agg_stats(
         manual_agg:dict[str] = {},
         schedule_path:str = SCHEDULE_PATH, 
         roster_path:str | None = None
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
     """
     Given statistical data, columns, and rosters,
     return aggregated statistics at the skater, goalie, or team level.
 
     Args:
-        games_df (pd.DataFrame):
+        games_df (pl.DataFrame):
             A DataFrame already containing game-by-game statistical data (generated with nhl_calculate_stats).
         group_by (list[str], optional):
             List of columns to group by.  You may provide an optional unspecified but this is currently unstable.
@@ -1155,7 +1196,7 @@ def nhl_agg_stats(
             Dict of values formatted with the sort column as the key and a bool determining whether to sort ascending or not as the value.  Default is empty leading to default sort.
         metric (list[tuple], optional):
             List of additional metrics to calculate.
-            Use one of '+', '-', '*', '/' to perform an operation on any existing column (using pd.eval).
+            Use one of '+', '-', '*', '/' to perform an operation on any existing column (using pl.eval).
             The first tuple element should be the name of the metric value, the second the numerator, and the third should be the denominator (if there is none then pass None).
 
             Ex. [('time_on_ice_per_games_played', 'time_on_ice', 'games_played'), ('goals_saved_above_expected', 'expected_goals_against-goals_against', None)]
@@ -1173,12 +1214,12 @@ def nhl_agg_stats(
             File path to the roster data used for mapping players and teams.
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing the aggregated statistics according to the selected parameters.
     """
     #Seasons list
     try:
-        seasons = games_df['season'].drop_duplicates().to_list()
+        seasons = games_df['season'].unique().to_list()
     except:
         seasons = 'no specified season(s)'
 
@@ -1193,17 +1234,13 @@ def nhl_agg_stats(
         games_df['game_id']
         
         #Add game date to games_df to (possibly) filter by
-        schedule = pd.read_csv(schedule_path)[['game_id','game_date']]
+        schedule = pl.read_csv(schedule_path).select(['game_id','game_date'])
         
-        for df in [schedule, games_df]:
-            df['game_id'] = df['game_id'].astype('Int64')
+        schedule = schedule.with_columns(pl.col('game_id').cast(pl.Int64, strict=False))
+        games_df = games_df.with_columns(pl.col('game_id').cast(pl.Int64, strict=False))
 
-        schedule['game_date'] = pd.to_datetime(schedule['game_date'])
-        games_df = pd.merge(
-            games_df.drop(columns=['game_date'], errors='ignore'), 
-            schedule, 
-            how='left'
-        )
+        schedule = schedule.with_columns(pl.col('game_date').cast(pl.String).str.to_datetime(strict=False))
+        games_df = games_df.drop('game_date', strict=False).join(schedule, on='game_id', how='left')
     except KeyError:
         pass
 
@@ -1226,44 +1263,80 @@ def nhl_agg_stats(
             and col != 'games_played'
         )
     ]
-    games_df = games_df.drop(columns=remove, errors='ignore')
+    games_df = games_df.drop(remove, strict=False)
 
     #If game id is in the dataframe then it is a game-by-game stats dataframe
     #The game_id is stored as games_played
     if 'game_id' in games_df.columns:
         gbg = True
-        games_df['games_played'] = games_df['game_id']
+        games_df = games_df.with_columns(pl.col('game_id').alias('games_played'))
     else:
         gbg = False
 
-    #Prepare aggregation clause
-    clause = (
-        {col: 'last' for col in BIO_STAT_COL if col in games_df.columns and col not in group_by and col != 'position'} | #Biographical info comes at the beginning of the dataframe (for nearly every single player every instance of bio info is the exact same)
-        {col: concat_col_values for col in DEFAULT_AGG if col not in group_by and col in games_df.columns and col != 'position'}| #Columns that appear in the default group-by which are not included in the argument will concat everything pertaining to the group_by argument.
-        ({'position': lambda x: x.mode().iloc[0]} if 'position' in games_df.columns else {})|
-        ({'games_played': 'nunique' if gbg else 'max'} if 'games_played' in games_df.columns else {})|
-        {col: partial(sum_unique_games, games_df_ref=games_df, col_name=col) for col in STANDINGS_COLS if col in games_df.columns and 'game_id' in games_df.columns}| #Standings columns must sum by game_id rather than summing every row (in case multiple rows are provided by another group)        {col: 'sum' for col in games_df.columns if not any(s in col for s in NON_TOTALS) and col not in group_by and col not in BIO_STAT_COL and col not in DEFAULT_AGG and col not in exclude} | #Base stats to sum (and then compare later on)
-        {col: 'sum' for col in STANDINGS_COLS if col in games_df.columns and 'game_id' not in games_df.columns}| #Standings col summation when not summing by game_id
-        {col: 'sum' for col in games_df.columns if not any(s in col for s in NON_TOTALS) and col not in group_by and col not in BIO_STAT_COL and col not in DEFAULT_AGG and col and col not in STANDINGS_COLS and col not in exclude} | #Base stats to sum (and then compare later on)
-        {col: 'max' for col in games_df.columns if 'max_' in col or 'top_' in col} | #If stats are provided with certain labels they will be processed in their own manner
-        {col: 'min' for col in games_df.columns if 'min_' in col or 'bottom_' in col} |
-        {col: 'mean' for col in games_df.columns if 'avg_' in col or 'mean_' in col} |
-        {col: 'median' for col in games_df.columns if 'count_' in col} |
-        {col: 'std' for col in games_df.columns if 'std_' in col} |
-        {col: 'var' for col in games_df.columns if 'var_' in col or 'variance_' in col} |
-        {col: 'size' for col in games_df.columns if 'size_' in col}
-    )
+    # Prepare the aggregation clause in the same logical order as the legacy
+    # implementation, while keeping every operation native to Polars.
+    agg_exprs = []
+    for col in BIO_STAT_COL:
+        if col in games_df.columns and col not in group_by and col not in exclude and col not in manual_agg and col != 'position':
+            agg_exprs.append(pl.col(col).drop_nulls().last().alias(col))
+    for col in DEFAULT_AGG:
+        if col in games_df.columns and col not in group_by and col not in exclude and col not in manual_agg and col != 'position':
+            values = pl.col(col).drop_nulls().cast(pl.String).unique(maintain_order=True).str.join(', ')
+            if col == 'season' and games_df[col].dtype.is_numeric():
+                values = pl.when(pl.col(col).min() != pl.col(col).max()).then(
+                    pl.concat_str([
+                        pl.col(col).min().cast(pl.String),
+                        pl.col(col).max().cast(pl.String),
+                    ], separator=' - ')
+                ).otherwise(values)
+            agg_exprs.append(values.alias(col))
+    if 'position' in games_df.columns and 'position' not in group_by and 'position' not in exclude and 'position' not in manual_agg:
+        agg_exprs.append(pl.col('position').drop_nulls().mode().first().alias('position'))
+    if 'games_played' in games_df.columns and 'games_played' not in group_by and 'games_played' not in exclude and 'games_played' not in manual_agg:
+        agg_exprs.append((pl.col('games_played').n_unique() if gbg else pl.col('games_played').max()).alias('games_played'))
 
-    #manual_agg is added after the initial prep in order to update values that may originally exist
-    clause.update(manual_agg)
+    if gbg:
+        for col in STANDINGS_COLS:
+            if col in games_df.columns and col not in group_by and col not in exclude and col not in manual_agg:
+                agg_exprs.append(pl.col(col).sum().alias(col))
+
+    for col in games_df.columns:
+        if col in group_by or col in exclude or col in manual_agg or col in BIO_STAT_COL or col in DEFAULT_AGG or col in STANDINGS_COLS or col in ('position', 'games_played'):
+            continue
+        if any(s in col for s in NON_TOTALS) and col not in STANDINGS_COLS:
+            continue
+        if col in STANDINGS_COLS and gbg:
+            agg_exprs.append(pl.col(col).sum().alias(col))
+        elif 'max_' in col or 'top_' in col:
+            agg_exprs.append(pl.col(col).max().alias(col))
+        elif 'min_' in col or 'bottom_' in col:
+            agg_exprs.append(pl.col(col).min().alias(col))
+        elif 'avg_' in col or 'mean_' in col:
+            agg_exprs.append(pl.col(col).mean().alias(col))
+        elif 'count_' in col:
+            agg_exprs.append(pl.col(col).median().alias(col))
+        elif 'std_' in col:
+            agg_exprs.append(pl.col(col).std().alias(col))
+        elif 'var_' in col or 'variance_' in col:
+            agg_exprs.append(pl.col(col).var().alias(col))
+        elif 'size_' in col:
+            agg_exprs.append(pl.col(col).count().alias(col))
+        else:
+            agg_exprs.append(pl.col(col).sum().alias(col))
+    for col, aggregation in manual_agg.items():
+        fn = aggregation if isinstance(aggregation, str) else None
+        if fn == 'last': agg_exprs.append(pl.col(col).last().alias(col))
+        elif fn == 'sum': agg_exprs.append(pl.col(col).sum().alias(col))
+        elif fn == 'max': agg_exprs.append(pl.col(col).max().alias(col))
+        elif fn == 'min': agg_exprs.append(pl.col(col).min().alias(col))
 
     #If groupby list is blank, sum everything
     if not group_by:
-        games_df['_all'] = '_all'
+        games_df = games_df.with_columns(pl.lit('_all').alias('_all'))
         group_by = ['_all']
 
     #Apply group-by
-    complete = games_df.groupby(by=group_by,as_index=False).agg(clause)
+    complete = games_df.group_by(group_by, maintain_order=True).agg(agg_exprs).sort(group_by, maintain_order=True)
 
     #Apply post-filter provided in params
     if params:
@@ -1274,7 +1347,7 @@ def nhl_agg_stats(
     
     #Add roster information (this comes before to ensure bio columns, such as position, can be grouped-by if desired)
     if roster_path:
-        complete = apply_rosters(complete, 'team' if 'player_id' not in group_by else 'player', roster_path)
+        complete = apply_rosters(complete, 'team' if 'player_id' not in group_by else 'player', schedule_path, roster_path)
 
     #Add per 60 stats and percentile rank
     complete = rank_stats(complete, rates, comparison, group_by)
@@ -1286,8 +1359,10 @@ def nhl_agg_stats(
     sort_by = list(sort.keys())
     sort_asc = list(sort.values())
     
-    complete = complete[[col for col in FRONT_COL if col in complete.columns]+[col for col in complete.columns if col not in FRONT_COL]]
-    complete = complete.sort_values(by=sort_by, ascending=sort_asc) if sort_by else complete
+    front = [col for col in FRONT_COL if col in complete.columns]
+    complete = complete.select(front + [col for col in complete.columns if col not in front])
+    if sort_by:
+        complete = complete.sort(sort_by, descending=[not x for x in sort_asc], maintain_order=True)
 
     end = time.perf_counter()
     length = end-start
@@ -1298,7 +1373,7 @@ def nhl_agg_stats(
     return complete
 
 def nhl_plot_events(
-        pbp:pd.DataFrame,
+        pbp:pl.DataFrame,
         group:Literal['skater','goalie','team','coach','game'],
         entities:int | str | list[int] | list[str],
         events:Union[Literal['all'], str, list[str]] = FENWICK_EVENTS,
@@ -1317,7 +1392,7 @@ def nhl_plot_events(
     Given play-by-play data, plot arbitrary event locations for a group of entities.
 
     Args:
-        pbp (pd.DataFrame):
+        pbp (pl.DataFrame):
             A DataFrame containing play-by-play event data.
         group (Literal['skater','goalie','team','coach','game']):
             Entity type to plot (skater, goalie, team, coach, or game).
@@ -1397,39 +1472,39 @@ def nhl_plot_events(
 
     pbp0 = pbp
     if season_types:
-        pbp0 = pbp0.loc[pbp0['season_type'].isin(season_types)]
+        pbp0 = pbp0.filter(pl.col('season_type').is_in(season_types))
 
     if strengths != 'all':
-        pbp0 = pbp0.loc[(pbp0['strength_state'].isin(strengths)) | (pbp0['strength_state'].astype(str).str[::-1].isin(strengths))]
+        pbp0 = pbp0.filter(pl.col('strength_state').is_in(strengths) | pl.col('strength_state').cast(pl.String).str.reverse().is_in(strengths))
 
-    pbp_plot = pbp0.loc[pbp0['event_type'].isin(events)] if events else pbp0
+    pbp_plot = pbp0.filter(pl.col('event_type').is_in(events)) if events else pbp0
 
-    roster = pd.read_csv(DEFAULT_ROSTER)
+    roster = pl.read_csv(DEFAULT_ROSTER)
     team_data = load_teaminfo()
     primary_color_by_wsba_id = team_primary_color_map(team_data)
 
     results = {}
 
     for title, entity, target_season in zip(titles, entities, seasons):
-        pbp_season = pbp0 if target_season is None else pbp0.loc[pbp0['season'] == target_season]
-        pbp_season_plot = pbp_plot if target_season is None else pbp_plot.loc[pbp_plot['season'] == target_season]
+        pbp_season = pbp0 if target_season is None else pbp0.filter(pl.col('season') == target_season)
+        pbp_season_plot = pbp_plot if target_season is None else pbp_plot.filter(pl.col('season') == target_season)
 
         if group == 'game':
             game_id = int(entity)
-            game_rows = pbp_season_plot.loc[pbp_season_plot['game_id'] == game_id]
-            if game_rows.empty:
+            game_rows = pbp_season_plot.filter(pl.col('game_id') == game_id)
+            if game_rows.is_empty():
                 continue
 
-            away_abbr = game_rows['away_team_abbr'].iloc[0]
-            home_abbr = game_rows['home_team_abbr'].iloc[0]
-            date = game_rows['game_date'].iloc[0]
-            season_val = int(game_rows['season'].iloc[0])
+            away_abbr = game_rows['away_team_abbr'][0]
+            home_abbr = game_rows['home_team_abbr'][0]
+            date = game_rows['game_date'][0]
+            season_val = int(game_rows['season'][0])
 
-            away_rows = team_data.loc[team_data['wsba_id'] == f'{away_abbr}{season_val}']
-            home_rows = team_data.loc[team_data['wsba_id'] == f'{home_abbr}{season_val}']
+            away_rows = team_data.filter(pl.col('wsba_id') == f'{away_abbr}{season_val}')
+            home_rows = team_data.filter(pl.col('wsba_id') == f'{home_abbr}{season_val}')
 
-            away_row = away_rows.iloc[0] if not away_rows.empty else None
-            home_row = home_rows.iloc[0] if not home_rows.empty else None
+            away_row = away_rows.row(0, named=True) if not away_rows.is_empty() else None
+            home_row = home_rows.row(0, named=True) if not home_rows.is_empty() else None
 
             away_color_type = team_colors['away']
             home_color_type = team_colors['home']
@@ -1441,8 +1516,7 @@ def nhl_plot_events(
             )
             home_color = home_row[home_color_key] if home_row is not None and home_color_key in home_row else '#d62728'
 
-            game_rows = game_rows.copy()
-            game_rows['color'] = np.where(game_rows['event_team_abbr'] == away_abbr, away_color, home_color)
+            game_rows = game_rows.with_columns(pl.when(pl.col('event_team_abbr') == away_abbr).then(pl.lit(away_color)).otherwise(pl.lit(home_color)).alias('color'))
 
             plot_title = title if title is not None else f'{away_abbr} @ {home_abbr} - {date}'
             results[game_id] = plot_events(
@@ -1458,11 +1532,10 @@ def nhl_plot_events(
 
         if group == 'team':
             team_abbr = str(entity).upper()
-            rows = pbp_season_plot.loc[pbp_season_plot['event_team_abbr'].astype(str).str.upper() == team_abbr]
-            if rows.empty:
+            rows = pbp_season_plot.filter(pl.col('event_team_abbr').cast(pl.String).str.to_uppercase() == team_abbr)
+            if rows.is_empty():
                 continue
 
-            rows = rows.copy()
             rows = apply_primary_colors(rows, primary_color_by_wsba_id)
 
             plot_title = title if title is not None else f'{team_abbr} Events'
@@ -1479,13 +1552,12 @@ def nhl_plot_events(
 
         if group == 'skater':
             player_id = int(entity)
-            player_name = roster.loc[roster['player_id'] == player_id, 'player_name']
-            player_name = player_name.iloc[0].title() if not player_name.empty else str(player_id)
-            rows = pbp_season_plot.loc[pbp_season_plot['event_player_1_id'] == player_id]
-            if rows.empty:
+            names = roster.filter(pl.col('player_id').cast(pl.Int64, strict=False) == player_id).get_column('player_name')
+            player_name = names[0].title() if len(names) else str(player_id)
+            rows = pbp_season_plot.filter(pl.col('event_player_1_id').cast(pl.Int64, strict=False) == player_id)
+            if rows.is_empty():
                 continue
 
-            rows = rows.copy()
             rows = apply_primary_colors(rows, primary_color_by_wsba_id)
 
             plot_title = title if title is not None else f'{player_name} Events'
@@ -1502,15 +1574,14 @@ def nhl_plot_events(
 
         if group == 'goalie':
             goalie_id = int(entity)
-            goalie_name = roster.loc[roster['player_id'] == goalie_id, 'player_name']
-            goalie_name = goalie_name.iloc[0].title() if not goalie_name.empty else str(goalie_id)
+            names = roster.filter(pl.col('player_id').cast(pl.Int64, strict=False) == goalie_id).get_column('player_name')
+            goalie_name = names[0].title() if len(names) else str(goalie_id)
             if 'event_goalie_id' not in pbp_season_plot.columns:
                 continue
-            rows = pbp_season_plot.loc[pbp_season_plot['event_goalie_id'] == goalie_id]
-            if rows.empty:
+            rows = pbp_season_plot.filter(pl.col('event_goalie_id').cast(pl.Int64, strict=False) == goalie_id)
+            if rows.is_empty():
                 continue
 
-            rows = rows.copy()
             rows = apply_primary_colors(rows, primary_color_by_wsba_id)
 
             plot_title = title if title is not None else f'{goalie_name} Goalie Events'
@@ -1529,14 +1600,10 @@ def nhl_plot_events(
             coach = str(entity)
             if 'home_coach' not in pbp_season_plot.columns or 'away_coach' not in pbp_season_plot.columns:
                 continue
-            coached = pbp_season_plot.loc[
-                ((pbp_season_plot['home_coach'] == coach) & (pbp_season_plot['event_team_abbr'] == pbp_season_plot['home_team_abbr']))
-                | ((pbp_season_plot['away_coach'] == coach) & (pbp_season_plot['event_team_abbr'] == pbp_season_plot['away_team_abbr']))
-            ]
-            if coached.empty:
+            coached = pbp_season_plot.filter(((pl.col('home_coach') == coach) & (pl.col('event_team_abbr') == pl.col('home_team_abbr'))) | ((pl.col('away_coach') == coach) & (pl.col('event_team_abbr') == pl.col('away_team_abbr'))))
+            if coached.is_empty():
                 continue
 
-            coached = coached.copy()
             coached = apply_primary_colors(coached, primary_color_by_wsba_id)
 
             plot_title = title if title is not None else f'{coach} Events'
@@ -1561,7 +1628,7 @@ def nhl_plot_events(
 
     return results
 
-def repo_load_rosters(seasons: int | list[int] | None = None) -> pd.DataFrame:
+def repo_load_rosters(seasons: int | list[int] | None = None) -> pl.DataFrame:
     """
     Returns roster data from repository
 
@@ -1570,20 +1637,20 @@ def repo_load_rosters(seasons: int | list[int] | None = None) -> pd.DataFrame:
             Season or seasons to return. If None, all repository roster data is returned.
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing roster data for supplied seasons.
     """
 
     if isinstance(seasons, int):
         seasons = [seasons]
         
-    data = pd.read_csv(DEFAULT_ROSTER)
+    data = pl.read_csv(DEFAULT_ROSTER)
     if seasons:
-        data = data.loc[data['season'].isin(seasons)]
+        data = data.filter(pl.col('season').is_in(seasons))
 
     return data
 
-def repo_load_schedule(seasons: int | list[int] | None = None) -> pd.DataFrame:
+def repo_load_schedule(seasons: int | list[int] | None = None) -> pl.DataFrame:
     """
     Returns schedule data from repository
 
@@ -1592,70 +1659,69 @@ def repo_load_schedule(seasons: int | list[int] | None = None) -> pd.DataFrame:
             Season or seasons to return. If None, all repository schedule data is returned.
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing the schedule data for the specified season and date range.    
     """
 
     if isinstance(seasons, int):
         seasons = [seasons]
 
-    data = pd.read_csv(SCHEDULE_PATH, low_memory=False)
+    data = pl.read_csv(SCHEDULE_PATH, low_memory=False)
     if seasons:
-        data = data.loc[data['season'].isin(seasons)]
+        data = data.filter(pl.col('season').is_in(seasons))
 
     return data
 
-def repo_load_teaminfo() -> pd.DataFrame:
+def repo_load_teaminfo() -> pl.DataFrame:
     """
     Returns team data from repository
 
     Args:
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing general team information.
     """
 
-    return pd.read_csv(INFO_PATH)
+    return pl.read_csv(INFO_PATH)
 
-def utility_get_schema(df:pd.DataFrame) -> pd.DataFrame:
+def utility_get_schema(df:pl.DataFrame) -> pl.DataFrame:
     """
     Returns schema for provided dataframe
 
     Args:
-        df (pd.DataFrame):
+        df (pl.DataFrame):
             Any dataframe generated by functions in the wsba-hockey package
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing the schema for the specified dataframe.    
     """
 
-    return pd.DataFrame({
+    return pl.DataFrame({
                 'column': df.columns,
-                'dtype': df.dtypes
+                'dtype': [str(dtype) for dtype in df.dtypes]
             })
 
-def utility_get_unique(df:pd.DataFrame) -> pd.DataFrame:
+def utility_get_unique(df:pl.DataFrame) -> pl.DataFrame:
     """
     Returns unique values in each column for provided dataframe.
 
     Args:
-        df (pd.DataFrame):
+        df (pl.DataFrame):
             Any dataframe generated by functions in the wsba-hockey package
 
     Returns:
-        pd.DataFrame:
+        pl.DataFrame:
             A DataFrame containing the unique values in each column for the specified dataframe.    
     """
 
-    unique_dict = {
-        col: pd.Series(df[col].dropna().unique())
+    values = {
+        col: df[col].drop_nulls().unique(maintain_order=True).to_list()
         for col in df.columns
     }
-
-    unique_df = pd.DataFrame(dict(
-        [(k, pd.Series(v)) for k, v in unique_dict.items()]
-    ))
-
-    return unique_df
+    height = max((len(items) for items in values.values()), default=0)
+    return pl.DataFrame({
+        col: pl.Series(col, items + [None] * (height - len(items)), dtype=df[col].dtype)
+        for col, items in values.items()
+    })
