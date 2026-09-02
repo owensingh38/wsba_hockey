@@ -36,7 +36,7 @@ from wsba_hockey.wsba_main import (
 
 from wsba_hockey.tools.http import make_pooled_session
 
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 
 from wsba_hockey.tools.globals import (
     A3Z_STRENGTH_FIXES,
@@ -61,8 +61,6 @@ from wsba_hockey.tools.globals import (
     EVENT_MARKERS,
     FENWICK_EVENTS,
     FRONT_COL,
-    GAME_SCORE,
-    GS_SCORE_FEATURES,
     IMG_PATH,
     INFO_PATH,
     KNOWN_PROBS,

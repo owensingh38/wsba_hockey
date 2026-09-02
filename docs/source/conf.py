@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath("../../src"))
 project = 'wsba_hockey'
 copyright = '2026, Owen Singh'
 author = 'Owen Singh'
-release = '1.6.0'
+release = '1.7.1'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

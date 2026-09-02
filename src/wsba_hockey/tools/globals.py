@@ -756,29 +756,6 @@ SCHEDULE_PATH = os.path.join(DIR, 'schedule', 'schedule.csv')
 INFO_PATH = os.path.join(DIR, 'teaminfo', 'nhl_teaminfo.csv')
 DEFAULT_ROSTER = os.path.join(DIR, 'rosters', 'nhl_rosters.csv')
 
-GS_SCORE_FEATURES = {
-    'skater': [
-        "points",
-        "penalties_drawn_percentage",
-        "puck_management_percentage",
-        "faceoff_percentage",
-        "even_strength_expected_goals_contribution_percentage",
-        "even_strength_expected_goals_for",
-        "even_strength_expected_goals_against",
-        "power_play_expected_goals_contribution_percentage",
-        "power_play_expected_goals_for",
-        "power_play_expected_goals_against",
-        "short_handed_expected_goals_contribution_percentage",
-        "short_handed_expected_goals_for",
-        "short_handed_expected_goals_against"
-    ],
-
-    'goalie': [
-        "expected_goals_for_percentage",
-        "goals_against_per_expected_goals_against"
-    ]
-}
-
 STATS_SORT = {
     'skater': {
         'by': ['player_name', 'season', 'team_abbr', 'player_id'],
@@ -791,10 +768,6 @@ STATS_SORT = {
     'team': {
         'by': ['team_abbr', 'season'],
         'ascending': True
-    },
-    'game_score': {
-        'by': ['game_score', 'player_name', 'season', 'team_abbr', 'player_id'],
-        'ascending': [False, True, True, True, True]
     },
     'a3z': {
         'by': ['player_name', 'season', 'team_abbr', 'player_id'],
@@ -888,7 +861,6 @@ STRENGTHS = ['3v3',
             '6v5']
 
 XG_MODEL = os.path.join(XG_MODEL_DIR, 'wsba_xg.json')
-GAME_SCORE = os.path.join(DIR, 'game_score')
 
 TEST_PATH = os.path.join(XG_MODEL_DIR, 'testing', 'xg_model_training_runs.csv')
 CV_PATH = os.path.join(XG_MODEL_DIR, 'testing', 'xg_model_cv_runs.csv')

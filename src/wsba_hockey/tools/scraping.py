@@ -51,6 +51,22 @@ def seconds_expr(column):
         .otherwise(None)
     )
 
+
+def _write_source_csv(df, path):
+    # Source exports are diagnostic CSVs. Legacy payloads can contain nested
+    # JSON values, which CSV cannot represent natively; stringify only the
+    # export so the in-memory result remains unchanged.
+    nested = [column for column, dtype in df.schema.items() if dtype.is_nested()]
+    if nested:
+        df = df.with_columns([
+            pl.col(column).map_elements(
+                lambda value: json.dumps(value, default=str),
+                return_dtype=pl.String,
+            ).alias(column)
+            for column in nested
+        ])
+    df.select(pl.all().cast(pl.String)).write_csv(path)
+
 def adjust_coords(pbp):
     # Given JSON or ESPN play-by-play, return coordinates normalized so the
     # away offensive zone is on the left and the home offensive zone is on
@@ -990,8 +1006,8 @@ def combine_pbp(info,sources,session=None):
             if not os.path.exists(dirs_json):
                 os.makedirs(dirs_json)
 
-            html_pbp.write_csv(f"{dirs_html}{source_game_id}_HTML.csv",index=False)
-            espn_pbp.write_csv(f"{dirs_json}{source_game_id}_JSON.csv",index=False)
+            _write_source_csv(html_pbp, f"{dirs_html}{source_game_id}_HTML.csv")
+            _write_source_csv(espn_pbp, f"{dirs_json}{source_game_id}_JSON.csv")
 
         print(f' merging on columns...',end="")
         #Merge pbp
@@ -1010,8 +1026,8 @@ def combine_pbp(info,sources,session=None):
             if not os.path.exists(dirs_json):
                 os.makedirs(dirs_json)
 
-            html_pbp.write_csv(f"{dirs_html}{source_game_id}_HTML.csv",index=False)
-            json_pbp.write_csv(f"{dirs_json}{source_game_id}_JSON.csv",index=False)
+            _write_source_csv(html_pbp, f"{dirs_html}{source_game_id}_HTML.csv")
+            _write_source_csv(json_pbp, f"{dirs_json}{source_game_id}_JSON.csv")
 
         #Assign target numbers
         html_pbp = assign_target(html_pbp)
@@ -1068,6 +1084,17 @@ def parse_shifts_json(info):
     #Given game info, return json shift chart
 
     log = info['json_shifts']
+    empty = pl.DataFrame(schema={
+        'player_name': pl.String,
+        'player_id': pl.Int64,
+        'period': pl.Int64,
+        'event_team_abbr': pl.String,
+        'start': pl.Float64,
+        'duration': pl.Float64,
+        'end': pl.Float64,
+    })
+    if log.is_empty() or 'detailCode' not in log.columns:
+        return {'away': empty, 'home': empty}
     #Filter non-shift events and duplicate events
     log = log.filter(pl.col('detailCode') == 0).unique(['playerId', 'shiftNumber'])
 
@@ -1337,7 +1364,7 @@ def combine_shifts(info,sources,session=None):
         if not os.path.exists(dirs):
             os.makedirs(dirs)
 
-        full_shifts.write_csv(f"{dirs}{source_game_id}_SHIFTS.csv")
+        _write_source_csv(full_shifts, f"{dirs}{source_game_id}_SHIFTS.csv")
 
     #Return: full shifts data converted to play-by-play format
     return full_shifts

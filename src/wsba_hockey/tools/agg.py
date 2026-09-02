@@ -106,6 +106,11 @@ def process_stats(df, group, venue, game_strength, second_group):
 
 
 def calc_indv(pbp, game_strength, second_group):
+    # Very old NHL feeds omit the third-assist field entirely.  Keep the
+    # schema permissive and let the existing aggregation naturally produce
+    # zero secondary assists for that payload shape.
+    if 'event_player_3_id' not in pbp.columns:
+        pbp = pbp.with_columns(pl.lit(None).cast(pl.Int64).alias('event_player_3_id'))
     if game_strength != 'all':
         pbp = pbp.filter(pl.col('strength_state').is_in(game_strength))
     pbp = pbp.with_columns([
@@ -262,8 +267,6 @@ def apply_rosters(df, group, schedule_path, roster_path):
     if group == 'skater':
         # Keep rows with missing roster positions because null is not ``'G'``.
         complete = complete.filter(pl.col('position').is_null() | (pl.col('position') != 'G'))
-    elif group == 'game_score':
-        complete = complete.filter(pl.col('position').is_null() | (pl.col('position') != 'G') | pl.col('points').is_null())
     return complete
 
 

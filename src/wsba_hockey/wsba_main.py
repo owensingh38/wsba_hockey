@@ -304,6 +304,11 @@ def nhl_scrape_schedule(
         
         get = http_get(f'{api}{date_string}', session=session).json()
         game_week = pl.json_normalize(get['games']).drop('goals', strict=False)
+        # Recent score responses expose both a legacy top-level ``period``
+        # field and ``periodDescriptor.number``.  The latter is the mapped
+        # schedule field; discard the duplicate source before renaming.
+        if 'period' in game_week.columns and 'periodDescriptor.number' in game_week.columns:
+            game_week = game_week.drop('period')
         
         #Return nothing if there's nothing
         if not game_week.is_empty():
@@ -692,8 +697,12 @@ def nhl_scrape_roster(season: int, teams: str | list[str] | None = None, session
             print(f'No roster found for {team}...')
             rosts.append(pl.DataFrame())
 
-    #Combine rosters
-    df = pl.concat(rosts)
+    # Combine only successful roster responses.  Some teams have no roster
+    # for a requested historical season, so their fallback frames are empty.
+    rosts = [roster for roster in rosts if not roster.is_empty()]
+    if not rosts:
+        return pl.DataFrame()
+    df = pl.concat(rosts, how='diagonal_relaxed')
 
     #Standardize columns
     df = df.rename(COL_MAP['roster'], strict=False)
@@ -807,7 +816,9 @@ def nhl_scrape_player_info(player_ids: list[int], session=None) -> pl.DataFrame:
 
     infos = [df for df in infos if df is not None and not df.is_empty()]
     if infos:
-        df = pl.concat(infos)
+        # Player landing payloads vary by era; preserve all returned fields
+        # while allowing columns to be absent from individual responses.
+        df = pl.concat(infos, how='diagonal_relaxed')
         
         #Standardize columns
         df = df.rename(COL_MAP['player_info'], strict=False)
@@ -837,7 +848,9 @@ def nhl_scrape_draft_rankings(arg:str | Literal['now'] = 'now', category:int = 0
     print(f'Scraping draft rankings for {arg}...\nCategory: {DRAFT_CAT[category]}...')
 
     #Player category only applies when requesting a specific season
-    api = f"https://api-web.nhle.com/v1/draft/rankings/{arg}/{category}" if category > 0 else f"https://api-web.nhle.com/v1/draft/rankings/{arg}"
+    # Categories apply only to date-specific ranking endpoints; ``now`` is a
+    # single all-category response as documented above.
+    api = f"https://api-web.nhle.com/v1/draft/rankings/{arg}/{category}" if category > 0 and arg != 'now' else f"https://api-web.nhle.com/v1/draft/rankings/{arg}"
     data = pl.json_normalize(http_get(api, session=session).json()['rankings'])
 
     #Add player name columns
@@ -1037,7 +1050,7 @@ def nhl_scrape_seasons(analytic: bool = False, session=None) -> pl.DataFrame:
 
 def nhl_calculate_stats(
         pbp:pl.DataFrame, 
-        group:Literal['skater','goalie','team','game_score'], 
+        group:Literal['skater','goalie','team'], 
         game_strength:Union[Literal['all'], str, list[str]] = 'all', 
         season_types:int | list[int] = [2,3],
         schedule_path:str = SCHEDULE_PATH,
@@ -1050,8 +1063,8 @@ def nhl_calculate_stats(
     Args:
         pbp (pl.DataFrame):
             A DataFrame containing play-by-play event data.
-        group (Literal['skater', 'goalie', 'team', 'game_score']):
-            Type of statistics to calculate. Must be one of 'skater', 'goalie', 'team', or 'game_score' (specific combination of skaters and goaltenders by game).
+        group (Literal['skater', 'goalie', 'team']):
+            Type of statistics to calculate. Must be one of 'skater', 'goalie', or 'team'.
         season (int): 
             The NHL season formatted such as "20242025".
         game_strength (int or list[str], optional):
@@ -1059,7 +1072,7 @@ def nhl_calculate_stats(
         season_types (int or List[int], optional):
             List of season_types to include in scraping process.  Default is all regular season and playoff games which are the integers 2 and 3 respectively.
         split_game (bool, optional):
-            If True, aggregates stats separately for each game; otherwise, stats are aggregated across all games.  Value is ignored when group == 'game_score'.  Default is False.
+            If True, aggregates stats separately for each game; otherwise, stats are aggregated across all games. Default is False.
         roster_path (str, optional):
             File path to the roster data used for mapping players and teams.
             
@@ -1145,8 +1158,7 @@ def nhl_calculate_stats(
     #Set TOI to minutes
     complete = complete.with_columns((pl.col('time_on_ice') / 60).alias('time_on_ice'))
 
-    if group != 'game_score':
-        complete = complete.with_columns((pl.col('time_on_ice') / pl.col('games_played')).alias('time_on_ice_per_games_played'))
+    complete = complete.with_columns((pl.col('time_on_ice') / pl.col('games_played')).alias('time_on_ice_per_games_played'))
 
     #Apply roster information to stats
     sort_info = STATS_SORT[group]
